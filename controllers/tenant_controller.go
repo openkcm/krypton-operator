@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	platformv1alpha1 "github.com/cryptoedge/cryptoedgeoperator/api/v1alpha1"
+	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"

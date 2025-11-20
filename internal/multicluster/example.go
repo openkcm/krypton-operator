@@ -15,7 +15,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 
-	platformv1alpha1 "github.com/cryptoedge/cryptoedgeoperator/api/v1alpha1"
+	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -43,7 +43,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
 
-	helmutil "github.com/cryptoedge/cryptoedgeoperator/internal/helmutil"
+	helmutil "github.com/openkcm/crypto-edge-operator/internal/helmutil"
 )
 
 // RunMulticlusterExample starts a multicluster manager that reconciles Tenants across discovered clusters.

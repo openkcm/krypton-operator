@@ -1,6 +1,6 @@
 package main
 
-import "github.com/cryptoedge/cryptoedgeoperator/internal/multicluster"
+import "github.com/openkcm/crypto-edge-operator/internal/multicluster"
 
 func main() {
 	multicluster.RunMulticlusterExample()
