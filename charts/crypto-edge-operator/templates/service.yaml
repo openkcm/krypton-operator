@@ -1,0 +1,25 @@
+{{- if .Values.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crypto-edge-operator.fullname" . }}
+  namespace: {{ include "crypto-edge-operator.namespace" . }}
+  labels:
+    {{- include "crypto-edge-operator.labels" . | nindent 4 }}
+    {{- with .Values.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- with .Values.service.ports }}
+  ports:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "crypto-edge-operator.selectorLabels" . | nindent 4 }}
+{{- end }}

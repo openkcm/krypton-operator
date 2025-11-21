@@ -127,6 +127,50 @@ func RunMulticlusterExample() {
 				}
 				return ctrl.Result{}, err
 			}
+			// Helper to emit a minimal Event directly into the cluster where the Tenant lives.
+			publishEvent := func(eventType, reason, message string) {
+				// Skip if tenant namespace empty (should not happen).
+				if tenant.Namespace == "" {
+					return
+				}
+				ev := &corev1.Event{}
+				ev.ObjectMeta.Namespace = tenant.Namespace
+				ev.ObjectMeta.Name = fmt.Sprintf("%s.%d", tenant.Name, time.Now().UnixNano())
+				ev.InvolvedObject = corev1.ObjectReference{
+					Kind:       "Tenant",
+					Namespace:  tenant.Namespace,
+					Name:       tenant.Name,
+					UID:        tenant.UID,
+					APIVersion: platformv1alpha1.GroupVersion.String(),
+				}
+				ev.Type = eventType
+				ev.Reason = reason
+				ev.Message = message
+				ev.FirstTimestamp = metav1.Now()
+				ev.LastTimestamp = ev.FirstTimestamp
+				ev.Source = corev1.EventSource{Component: "multicluster-tenants"}
+				// Populate deprecated fields still required by validation for corev1.Event objects.
+				ev.ReportingController = "platform.example.com/multicluster-tenants"
+				instName := os.Getenv("POD_NAME")
+				if instName == "" {
+					instName = os.Getenv("HOSTNAME")
+				}
+				if instName == "" {
+					instName = fmt.Sprintf("host-%s", req.ClusterName)
+				}
+				ev.ReportingInstance = instName
+				ev.Action = reason
+				ev.EventTime = metav1.MicroTime{Time: time.Now()}
+				ev.Count = 1
+				// quick unique fingerprint for dedup detection by consumers
+				ev.Series = &corev1.EventSeries{Count: 1, LastObservedTime: ev.EventTime}
+				// Attempt create with short timeout.
+				cCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				if err := cl.GetClient().Create(cCtx, ev); err != nil && !apierrors.IsAlreadyExists(err) {
+					log.Info("event create failed", "reason", reason, "err", err)
+				}
+			}
 			// If clusterRef specified (non-nil) and secretName targets a different cluster, skip.
 			if tenant.Spec.ClusterRef != nil && tenant.Spec.ClusterRef.SecretName != "" && tenant.Spec.ClusterRef.SecretName != req.ClusterName {
 				log.V(1).Info("skipping cluster due to clusterRef", "cluster", req.ClusterName, "target", tenant.Spec.ClusterRef.SecretName)
@@ -139,14 +183,17 @@ func RunMulticlusterExample() {
 					create := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wsName}}
 					if err2 := cl.GetClient().Create(ctx, create); err2 != nil {
 						log.Error(err2, "failed to create workspace namespace", "workspace", wsName)
+						publishEvent(corev1.EventTypeWarning, "WorkspaceCreateFailed", err2.Error())
 						return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 					}
 					log.Info("workspace namespace created", "workspace", wsName)
+					publishEvent(corev1.EventTypeNormal, "WorkspaceCreated", wsName)
 				} else {
 					return ctrl.Result{}, err
 				}
 			} else {
 				log.Info("workspace namespace exists", "workspace", wsName)
+				publishEvent(corev1.EventTypeNormal, "WorkspaceExists", wsName)
 			}
 			releaseName := fmt.Sprintf("tenant-%s-%s", tenant.Name, req.ClusterName)
 			chartRef := tenant.Spec.Chart
@@ -182,6 +229,7 @@ func RunMulticlusterExample() {
 			aCfg := new(action.Configuration)
 			if err := aCfg.Init(getter, wsName, os.Getenv("HELM_DRIVER"), func(format string, v ...any) { log.V(1).Info(fmt.Sprintf(format, v...)) }); err != nil {
 				log.Error(err, "helm configuration init failed")
+				publishEvent(corev1.EventTypeWarning, "HelmConfigInitFailed", err.Error())
 				return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 			}
 			var loaded *chart.Chart
@@ -246,70 +294,122 @@ func RunMulticlusterExample() {
 			}
 			condReadyType := fmt.Sprintf("ClusterReady/%s", req.ClusterName)
 			condErrorType := fmt.Sprintf("ClusterError/%s", req.ClusterName)
+			earlyPhaseAggregate := false
 			if prevFP == fingerprint && installed {
 				log.Info("fingerprint unchanged; skipping helm upgrade", "release", releaseName)
+				publishEvent(corev1.EventTypeNormal, "HelmSkip", "fingerprint unchanged")
 				upsertCondition(metav1.Condition{Type: condReadyType, Status: metav1.ConditionTrue, Reason: "NoChange", Message: "release up-to-date", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-				// Phase aggregation later after helm logic.
-				goto PhaseAggregate
+				earlyPhaseAggregate = true
 			}
+			// Progress condition type (declared before any goto targets to satisfy compiler).
+			progressType := fmt.Sprintf("ClusterProgress/%s", req.ClusterName)
 			if !installed && loaded != nil {
+				publishEvent(corev1.EventTypeNormal, "HelmInstallStart", releaseName)
 				inst := action.NewInstall(aCfg)
 				inst.ReleaseName = releaseName
 				inst.Namespace = wsName
+				// Wait for resources (including hook Jobs) to be ready before we mark cluster ready.
+				inst.Wait = true
+				inst.Timeout = 180 * time.Second
+				// Mark progress condition (True while running)
+				upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionTrue, Reason: "Installing", Message: "helm install in progress", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 				if _, err := inst.Run(loaded, values); err != nil {
 					log.Error(err, "helm install failed")
+					publishEvent(corev1.EventTypeWarning, "HelmInstallFailed", err.Error())
 					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "InstallFailed", Message: err.Error(), ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-					goto PhaseAggregate
+					upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionFalse, Reason: "InstallFailed", Message: "helm install failed", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
+					earlyPhaseAggregate = true
 				}
 				log.Info("helm install success", "release", releaseName)
+				publishEvent(corev1.EventTypeNormal, "HelmInstalled", releaseName)
 				tenant.Annotations[annoKey] = fingerprint
 				if err := cl.GetClient().Update(ctx, tenant); err != nil {
 					log.Error(err, "failed to update tenant annotation with fingerprint")
 				}
+				upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionFalse, Reason: "InstallComplete", Message: "helm install complete", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 				upsertCondition(metav1.Condition{Type: condReadyType, Status: metav1.ConditionTrue, Reason: "Installed", Message: "release installed", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 			} else if installed && loaded != nil {
+				publishEvent(corev1.EventTypeNormal, "HelmUpgradeStart", releaseName)
 				up := action.NewUpgrade(aCfg)
 				up.Namespace = wsName
+				up.Wait = true
+				up.Timeout = 180 * time.Second
+				upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionTrue, Reason: "Upgrading", Message: "helm upgrade in progress", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 				if _, err := up.Run(releaseName, loaded, values); err != nil {
 					log.Error(err, "helm upgrade failed")
+					publishEvent(corev1.EventTypeWarning, "HelmUpgradeFailed", err.Error())
 					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "UpgradeFailed", Message: err.Error(), ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-					goto PhaseAggregate
+					upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionFalse, Reason: "UpgradeFailed", Message: "helm upgrade failed", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
+					earlyPhaseAggregate = true
 				}
 				log.Info("helm upgrade success", "release", releaseName)
+				publishEvent(corev1.EventTypeNormal, "HelmUpgraded", releaseName)
 				tenant.Annotations[annoKey] = fingerprint
 				if err := cl.GetClient().Update(ctx, tenant); err != nil {
 					log.Error(err, "failed to update tenant annotation with fingerprint")
 				}
+				upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionFalse, Reason: "UpgradeComplete", Message: "helm upgrade complete", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 				upsertCondition(metav1.Condition{Type: condReadyType, Status: metav1.ConditionTrue, Reason: "Upgraded", Message: "release upgraded", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 			} else {
+				// Handle scenarios where chart not loaded or invalid without hammering status every loop.
 				if !versionValid {
 					log.Info("chart version invalid; skipping helm action", "version", chartRef.Version)
+					publishEvent(corev1.EventTypeWarning, "ChartVersionInvalid", chartRef.Version)
 					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "VersionInvalid", Message: "chart version invalid", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 				} else if locateErr != nil && strings.Contains(strings.ToLower(locateErr.Error()), "invalid_reference") {
 					log.Info("chart version not found in repo", "version", chartRef.Version)
+					publishEvent(corev1.EventTypeWarning, "ChartVersionNotFound", chartRef.Version)
 					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "VersionNotFound", Message: "chart version not found in repository", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-				} else {
+				} else if loaded == nil {
 					log.Info("chart not loaded; skipping helm action", "repo", chartRef.Repo)
-					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "ChartNotLoaded", Message: "chart not loaded; repo unreachable?", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
+					publishEvent(corev1.EventTypeWarning, "ChartNotLoaded", chartRef.Repo)
+					// Non-fatal error condition only added once per generation (avoid loop churn).
+					alreadySet := false
+					for _, c := range tenant.Status.Conditions {
+						if c.Type == condErrorType && c.Reason == "ChartNotLoaded" && c.ObservedGeneration == tenant.Generation {
+							alreadySet = true
+							break
+						}
+					}
+					if !alreadySet {
+						upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "ChartNotLoaded", Message: "chart not loaded; repo unreachable?", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
+					}
 				}
 			}
-		PhaseAggregate:
-			// Aggregate overall Phase:
+			// Phase aggregation (label preserved from previous goto target)
+			if !earlyPhaseAggregate {
+				// fallthrough; conditions already set
+			}
+			// Aggregate overall Phase with nuanced error severity.
+			// Fatal errors: InstallFailed, UpgradeFailed. Non-fatal/spec errors: ChartNotLoaded, VersionNotFound, VersionInvalid.
+			allowChartSkip := os.Getenv("ALLOW_CHART_SKIP") == "true"
 			phase := platformv1alpha1.TenantPhasePending
-			hasError := false
-			hasReady := false
+			hadFatalError := false
+			hadReady := false
+			nonFatalErrorPresent := false
 			for _, c := range tenant.Status.Conditions {
 				if strings.HasPrefix(c.Type, "ClusterError/") && c.Status == metav1.ConditionTrue {
-					hasError = true
+					// Inspect Reason for severity.
+					switch c.Reason {
+					case "InstallFailed", "UpgradeFailed":
+						hadFatalError = true
+					case "ChartNotLoaded", "VersionNotFound", "VersionInvalid":
+						nonFatalErrorPresent = true
+					}
 				}
 				if strings.HasPrefix(c.Type, "ClusterReady/") && c.Status == metav1.ConditionTrue {
-					hasReady = true
+					hadReady = true
 				}
 			}
-			if hasError {
+			// Determine phase precedence.
+			if hadFatalError {
 				phase = platformv1alpha1.TenantPhaseError
-			} else if hasReady {
+			} else if hadReady && (allowChartSkip || !nonFatalErrorPresent) {
+				// Ready wins if there is a ready condition and either no non-fatal error OR user allows skip.
 				phase = platformv1alpha1.TenantPhaseReady
+			} else if nonFatalErrorPresent {
+				// Remain Pending for non-fatal issues (e.g. repo temporarily unreachable) unless allowChartSkip flips to Ready.
+				phase = platformv1alpha1.TenantPhasePending
 			}
 			tenant.Status.Phase = phase
 			// Retry status update (rate limiter/context cancellations can occur under load).
@@ -335,7 +435,13 @@ func RunMulticlusterExample() {
 			}()
 			if updateErr != nil {
 				log.Error(updateErr, "failed to update tenant status phase/conditions after retries")
+				publishEvent(corev1.EventTypeWarning, "StatusUpdateFailed", updateErr.Error())
 				return ctrl.Result{RequeueAfter: 45 * time.Second}, nil
+			}
+			publishEvent(corev1.EventTypeNormal, "PhaseSet", string(phase))
+			// If we only have non-fatal chart load issues and allowChartSkip is true, avoid tight requeue.
+			if allowChartSkip && !hadFatalError && !hadReady && nonFatalErrorPresent {
+				return ctrl.Result{RequeueAfter: 120 * time.Second}, nil
 			}
 			return ctrl.Result{}, nil
 		})); err != nil {
