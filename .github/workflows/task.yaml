@@ -13,7 +13,7 @@ permissions:
     contents: read
 jobs:
   test:
-    runs-on: solinas-medium
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
