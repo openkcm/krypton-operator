@@ -17,6 +17,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive  # fetch all nested submodules
+          fetch-depth: 0         # full history (needed for tags/versioning)
 
       - name: Install Task
         run: |
