@@ -1,4 +1,4 @@
-name: CI
+name: task
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
     - cron: '0 0 * * *' # Every day at midnight UTC
 
 permissions:
-    id-token: write
-    contents: read
+  id-token: write
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,6 +20,18 @@ jobs:
         with:
           submodules: recursive  # fetch all nested submodules
           fetch-depth: 0         # full history (needed for tags/versioning)
+
+      - name: Init & verify submodules
+        run: |
+          git submodule sync --recursive || true
+          git submodule update --init --recursive || true
+          echo "Submodule status:" && git submodule status || true
+          echo "Expect Taskfile at hack/common/Taskfile_controller.yaml"
+          if [ ! -f hack/common/Taskfile_controller.yaml ]; then
+            echo "ERROR: Missing hack/common/Taskfile_controller.yaml"
+            echo "Listing hack/common:"; ls -al hack/common || true; find . -maxdepth 4 -name 'Taskfile_controller.yaml'
+            exit 1
+          fi
 
       - name: Install Task
         run: |
