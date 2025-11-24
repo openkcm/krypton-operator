@@ -1,9 +1,9 @@
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/apimachinery/pkg/runtime"
+    "k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // TenantPhase enumerates simple lifecycle states.
@@ -54,29 +54,35 @@ type Tenant struct {
 type TenantList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Tenant `json:"items"`
+
+	Items []Tenant `json:"items"`
 }
 
 func init() {
 	SchemeBuilder.Register(&Tenant{}, &TenantList{})
 }
 
-// Implement runtime.Object interfaces for manual scheme registration (controller-gen would normally do this).
-func (t *Tenant) GetObjectKind() schema.ObjectKind      { return &t.TypeMeta }
+// GetObjectKind returns the ObjectKind for Tenant.
+func (t *Tenant) GetObjectKind() schema.ObjectKind { return &t.TypeMeta }
+
+// GetObjectKind returns the ObjectKind for TenantList.
 func (tl *TenantList) GetObjectKind() schema.ObjectKind { return &tl.TypeMeta }
+
+// DeepCopyObject creates a deep copy of Tenant.
 func (t *Tenant) DeepCopyObject() runtime.Object {
 	if t == nil {
 		return nil
 	}
 	out := new(Tenant)
 	*out = *t
-	// no map copy needed (Chart removed)
 	if t.Status.Conditions != nil {
 		out.Status.Conditions = make([]metav1.Condition, len(t.Status.Conditions))
 		copy(out.Status.Conditions, t.Status.Conditions)
 	}
 	return out
 }
+
+// DeepCopyObject creates a deep copy of TenantList.
 func (tl *TenantList) DeepCopyObject() runtime.Object {
 	if tl == nil {
 		return nil
@@ -86,7 +92,13 @@ func (tl *TenantList) DeepCopyObject() runtime.Object {
 	if tl.Items != nil {
 		out.Items = make([]Tenant, len(tl.Items))
 		for i := range tl.Items {
-			out.Items[i] = *tl.Items[i].DeepCopyObject().(*Tenant)
+			obj := tl.Items[i].DeepCopyObject()
+			if tenant, ok := obj.(*Tenant); ok {
+				out.Items[i] = *tenant
+			} else {
+				// Fallback: shallow copy original element if type assertion fails.
+				out.Items[i] = tl.Items[i]
+			}
 		}
 	}
 	return out
