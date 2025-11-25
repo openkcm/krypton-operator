@@ -1,7 +1,7 @@
 package helmutil
 
 import (
-	"fmt"
+	"errors"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/discovery"
@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
+
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
@@ -25,7 +26,7 @@ func NewRemoteRESTClientGetter(cfg *rest.Config) *RemoteRESTClientGetter {
 
 func (g *RemoteRESTClientGetter) ToRESTConfig() (*rest.Config, error) {
 	if g.baseConfig == nil {
-		return nil, fmt.Errorf("rest config nil")
+		return nil, errors.New("rest config nil")
 	}
 	return rest.CopyConfig(g.baseConfig), nil
 }
@@ -51,7 +52,7 @@ func (g *RemoteRESTClientGetter) ToRESTMapper() (meta.RESTMapper, error) {
 	return restmapper.NewDeferredDiscoveryRESTMapper(disco), nil
 }
 
-// Helm sometimes calls this for printing warnings; we can return a minimal loader.
+// ToRawKubeConfigLoader returns a minimal empty kubeconfig loader used by helm for informational warning printing.
 func (g *RemoteRESTClientGetter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	// Minimal stub config (empty) for helm informational calls.
 	empty := clientcmdapi.NewConfig()
