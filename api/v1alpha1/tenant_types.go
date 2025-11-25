@@ -38,6 +38,7 @@ type TenantStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:path=tenants,scope=Namespaced,shortName=tenant
 
 // Tenant is the Schema for the tenants API.
 type Tenant struct {

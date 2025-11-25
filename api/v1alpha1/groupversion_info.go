@@ -1,3 +1,5 @@
+// +kubebuilder:object:generate=true
+// +groupName=platform.example.com
 package v1alpha1
 
 import (
