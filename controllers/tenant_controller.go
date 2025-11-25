@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
-
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,7 +15,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	// helm imports removed (centralized chart management)
+
+	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 )
 
 // TenantReconciler reconciles a Tenant object
