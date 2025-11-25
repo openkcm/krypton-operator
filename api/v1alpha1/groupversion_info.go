@@ -1,3 +1,6 @@
+// Package v1alpha1 contains the API types for the
+// platform.example.com group at version v1alpha1.
+//
 // +kubebuilder:object:generate=true
 // +groupName=platform.example.com
 package v1alpha1
