@@ -2,15 +2,18 @@ package multicluster
 
 import (
 	"context"
-	_ "embed" // required for go:embed directive
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	_ "embed" // required for go:embed directive
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // Embed the Tenant CRD manifest for on-demand apply to discovered clusters.
@@ -31,12 +34,12 @@ func EnsureTenantCRD(ctx context.Context, c client.Client) error {
 
 	// Retry loop for transient connection / context issues.
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := range 5 { // Go 1.25 int range loop
 		getErr := c.Get(ctx, client.ObjectKey{Name: crd.GetName()}, crd)
 		if getErr == nil {
 			return nil // already exists
 		}
-		if getErr != nil && !errors.IsNotFound(getErr) {
+		if getErr != nil && !apierrors.IsNotFound(getErr) {
 			// Transient network errors often show 'connection refused' or 'context canceled'. Retry those; abort others.
 			errStr := getErr.Error()
 			if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "Client.Timeout") {
@@ -56,7 +59,7 @@ func EnsureTenantCRD(ctx context.Context, c client.Client) error {
 			return fmt.Errorf("embedded manifest kind %s unexpected", gvk.Kind)
 		}
 		createErr := c.Create(ctx, obj)
-		if createErr == nil || errors.IsAlreadyExists(createErr) {
+		if createErr == nil || apierrors.IsAlreadyExists(createErr) {
 			return nil
 		}
 		errStr := createErr.Error()
@@ -70,5 +73,5 @@ func EnsureTenantCRD(ctx context.Context, c client.Client) error {
 	if lastErr != nil {
 		return lastErr
 	}
-	return fmt.Errorf("ensure CRD exhausted retries without success")
+	return errors.New("ensure CRD exhausted retries without success")
 }

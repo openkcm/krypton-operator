@@ -14,25 +14,25 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	action "helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	action "helm.sh/helm/v3/pkg/action"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -43,6 +43,8 @@ import (
 )
 
 // RunMulticlusterExample starts a multicluster manager that reconciles Tenants across discovered clusters.
+//
+//nolint:maintidx,gocyclo // complexity/maintainability accepted short-term; will refactor into helpers later
 func RunMulticlusterExample() {
 	var namespace string
 	var kubeconfigSecretLabel string
@@ -112,12 +114,12 @@ func RunMulticlusterExample() {
 		Named("multicluster-tenants").
 		For(&platformv1alpha1.Tenant{}).
 		Complete(mcreconcile.Func(func(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
-			log := ctrllog.FromContext(ctx).WithValues("cluster", req.ClusterName, "tenant", req.Request.NamespacedName)
+			log := ctrllog.FromContext(ctx).WithValues("cluster", req.ClusterName, "tenant", req.NamespacedName)
 			log.V(1).Info("reconcile start")
 			cl, err := mgr.GetCluster(ctx, req.ClusterName)
 			if err != nil {
 				log.Error(err, "get cluster failed")
-				return reconcile.Result{}, err
+				return ctrl.Result{}, err
 			}
 			// Defensive: ensure Tenant type registered in scheme (in case of edge re-engagement scenarios).
 			_ = platformv1alpha1.AddToScheme(cl.GetScheme())
@@ -128,7 +130,7 @@ func RunMulticlusterExample() {
 			}
 			// Fetch Tenant from THIS cluster (model: each cluster stores its own Tenant objects; no home shadow propagation).
 			tenant := &platformv1alpha1.Tenant{}
-			if err := cl.GetClient().Get(ctx, req.Request.NamespacedName, tenant); err != nil {
+			if err := cl.GetClient().Get(ctx, req.NamespacedName, tenant); err != nil {
 				if apierrors.IsNotFound(err) {
 					log.V(1).Info("tenant not found in cluster cache; skipping")
 					return ctrl.Result{}, nil
@@ -144,8 +146,8 @@ func RunMulticlusterExample() {
 					return
 				}
 				ev := &corev1.Event{}
-				ev.ObjectMeta.Namespace = tenant.Namespace
-				ev.ObjectMeta.Name = fmt.Sprintf("%s.%d", tenant.Name, time.Now().UnixNano())
+				ev.Namespace = tenant.Namespace
+				ev.Name = fmt.Sprintf("%s.%d", tenant.Name, time.Now().UnixNano())
 				ev.InvolvedObject = corev1.ObjectReference{
 					Kind:       "Tenant",
 					Namespace:  tenant.Namespace,
@@ -166,7 +168,7 @@ func RunMulticlusterExample() {
 					instName = os.Getenv("HOSTNAME")
 				}
 				if instName == "" {
-					instName = fmt.Sprintf("host-%s", req.ClusterName)
+					instName = "host-" + req.ClusterName
 				}
 				ev.ReportingInstance = instName
 				ev.Action = reason
@@ -222,7 +224,7 @@ func RunMulticlusterExample() {
 			sort.Strings(valKeys)
 			// values intentionally empty
 			fingerprint := hex.EncodeToString(fpHasher.Sum(nil))
-			annoKey := fmt.Sprintf("platform.example.com/fingerprint-%s", req.ClusterName)
+			annoKey := "platform.example.com/fingerprint-" + req.ClusterName
 			prevFP := tenant.Annotations[annoKey]
 			if tenant.Annotations == nil {
 				tenant.Annotations = map[string]string{}
@@ -298,17 +300,15 @@ func RunMulticlusterExample() {
 					tenant.Status.Conditions = append(tenant.Status.Conditions, cond)
 				}
 			}
-			condReadyType := fmt.Sprintf("ClusterReady/%s", req.ClusterName)
-			condErrorType := fmt.Sprintf("ClusterError/%s", req.ClusterName)
-			earlyPhaseAggregate := false
+			condReadyType := "ClusterReady/" + req.ClusterName
+			condErrorType := "ClusterError/" + req.ClusterName
 			if prevFP == fingerprint && installed {
 				log.Info("fingerprint unchanged; skipping helm upgrade", "release", releaseName)
 				publishEvent(corev1.EventTypeNormal, "HelmSkip", "fingerprint unchanged")
 				upsertCondition(metav1.Condition{Type: condReadyType, Status: metav1.ConditionTrue, Reason: "NoChange", Message: "release up-to-date", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-				earlyPhaseAggregate = true
 			}
 			// Progress condition type (declared before any goto targets to satisfy compiler).
-			progressType := fmt.Sprintf("ClusterProgress/%s", req.ClusterName)
+			progressType := "ClusterProgress/" + req.ClusterName
 			if !installed && loaded != nil {
 				publishEvent(corev1.EventTypeNormal, "HelmInstallStart", releaseName)
 				inst := action.NewInstall(aCfg)
@@ -324,7 +324,7 @@ func RunMulticlusterExample() {
 					publishEvent(corev1.EventTypeWarning, "HelmInstallFailed", err.Error())
 					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "InstallFailed", Message: err.Error(), ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 					upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionFalse, Reason: "InstallFailed", Message: "helm install failed", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-					earlyPhaseAggregate = true
+					// install failed; conditions set
 				}
 				log.Info("helm install success", "release", releaseName)
 				publishEvent(corev1.EventTypeNormal, "HelmInstalled", releaseName)
@@ -346,7 +346,7 @@ func RunMulticlusterExample() {
 					publishEvent(corev1.EventTypeWarning, "HelmUpgradeFailed", err.Error())
 					upsertCondition(metav1.Condition{Type: condErrorType, Status: metav1.ConditionTrue, Reason: "UpgradeFailed", Message: err.Error(), ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 					upsertCondition(metav1.Condition{Type: progressType, Status: metav1.ConditionFalse, Reason: "UpgradeFailed", Message: "helm upgrade failed", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
-					earlyPhaseAggregate = true
+					// upgrade failed; conditions set
 				}
 				log.Info("helm upgrade success", "release", releaseName)
 				publishEvent(corev1.EventTypeNormal, "HelmUpgraded", releaseName)
@@ -383,9 +383,7 @@ func RunMulticlusterExample() {
 				}
 			}
 			// Phase aggregation (label preserved from previous goto target)
-			if !earlyPhaseAggregate {
-				// fallthrough; conditions already set
-			}
+			// phase conditions already set above
 			// Aggregate overall Phase with nuanced error severity.
 			// Fatal errors: InstallFailed, UpgradeFailed. Non-fatal/spec errors: ChartNotLoaded, VersionNotFound, VersionInvalid.
 			allowChartSkip := os.Getenv("ALLOW_CHART_SKIP") == "true"
@@ -421,7 +419,7 @@ func RunMulticlusterExample() {
 			// Retry status update (rate limiter/context cancellations can occur under load).
 			updateErr := func() error {
 				var lastErr error
-				for i := 0; i < 3; i++ {
+				for range 3 { // Go 1.25 int range loop
 					// Short timeout per attempt to avoid hanging entire reconcile.
 					uCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					lastErr = cl.GetClient().Status().Update(uCtx, tenant)
@@ -462,6 +460,8 @@ func RunMulticlusterExample() {
 }
 
 // ensureSelfKubeconfigSecret creates a kubeconfig Secret for the current cluster if none with the label exists.
+//
+//nolint:maintidx,gocyclo // planned decomposition (file loading, reduction, validation) later
 func ensureSelfKubeconfigSecret(ctx context.Context, cfg *rest.Config, namespace, labelKey, dataKey string) error {
 	// Build a lightweight client (no cache) just for Secret operations.
 	scheme := runtime.NewScheme()
@@ -513,11 +513,11 @@ func ensureSelfKubeconfigSecret(ctx context.Context, cfg *rest.Config, namespace
 		// Build synthetic minimal config using rest.Config (may fail outside cluster if token absent).
 		apiServer := cfg.Host
 		auth := &clientcmdapi.AuthInfo{Token: cfg.BearerToken}
-		if len(cfg.TLSClientConfig.CertData) > 0 {
-			auth.ClientCertificateData = cfg.TLSClientConfig.CertData
+		if len(cfg.TLSClientConfig.CertData) > 0 { //nolint:staticcheck
+			auth.ClientCertificateData = cfg.TLSClientConfig.CertData //nolint:staticcheck
 		}
-		if len(cfg.TLSClientConfig.KeyData) > 0 {
-			auth.ClientKeyData = cfg.TLSClientConfig.KeyData
+		if len(cfg.TLSClientConfig.KeyData) > 0 { //nolint:staticcheck
+			auth.ClientKeyData = cfg.TLSClientConfig.KeyData //nolint:staticcheck
 		}
 		kc := clientcmdapi.Config{Clusters: map[string]*clientcmdapi.Cluster{"self": {Server: apiServer, CertificateAuthorityData: cfg.CAData, InsecureSkipTLSVerify: len(cfg.CAData) == 0}}, AuthInfos: map[string]*clientcmdapi.AuthInfo{"self": auth}, Contexts: map[string]*clientcmdapi.Context{"self": {Cluster: "self", AuthInfo: "self"}}, CurrentContext: "self"}
 		loaded = &kc
