@@ -6,7 +6,7 @@ includes:
     flatten: true
     excludes: [] # put task names in here which are overwritten in this file
     vars:
-      NESTED_MODULES: 'api cmd internal controllers multicluster'
+      NESTED_MODULES: 'cmd internal controllers multicluster'
       API_DIRS: '{{.ROOT_DIR}}/api/...'
       MANIFEST_OUT: '{{.ROOT_DIR}}/api/crds/'
       CODE_DIRS: '{{.ROOT_DIR}}/cmd/...'
