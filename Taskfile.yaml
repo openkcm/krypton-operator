@@ -39,3 +39,8 @@ tasks:
         done
         (cd "$PROJECT_ROOT"; go test $CODE_DIRS || true)
       fi
+  validate:test:
+    desc: "Override upstream validate:test to use local fallback."
+    run: once
+    cmds:
+    - task: val:test
