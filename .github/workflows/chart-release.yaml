@@ -2,7 +2,7 @@ name: Helm
 
 on:
   push:
-    branches: [ main ]
+    branches: [ feature/init, main ]
     paths:
       - 'charts/**'
 
