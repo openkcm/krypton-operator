@@ -29,6 +29,8 @@ image:
   digest: "" # optional sha256 digest overrides tag
   pullPolicy: IfNotPresent
   command: ["/crypto-edge-operator"]
+  # Args populated from central chart & discovery values below. Override to customize.
+  args: []
 
 # This is for the secretes for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
 imagePullSecrets: []
@@ -174,3 +176,19 @@ tolerations: []
 #     protocol: TCP
 
 affinity: {}
+
+# Central Helm chart configuration passed as flags to the operator.
+chart:
+  repo: "https://charts.jetstack.io"
+  name: "cert-manager"
+  version: "1.19.1"
+  installCRDs: true
+
+# Discovery / kubeconfig secret settings.
+discovery:
+  namespace: "crypto-edge-operator"  # namespace containing kubeconfig secrets; flag -namespace
+  kubeconfigLabel: "sigs.k8s.io/multicluster-runtime-kubeconfig" # flag -kubeconfig-label
+  kubeconfigKey: "kubeconfig" # flag -kubeconfig-key
+
+# When true, the chart will auto-populate image.args with flag values derived from above sections.
+populateArgs: true
