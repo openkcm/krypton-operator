@@ -67,6 +67,18 @@ func RunMulticlusterExample() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	// Ensure Helm paths are sane inside our container/runtime.
+	// Explicitly set HELM_* envs so cli.New() picks correct locations.
+	if os.Getenv("HELM_REPOSITORY_CONFIG") == "" {
+		os.Setenv("HELM_REPOSITORY_CONFIG", "/.config/helm/repositories.yaml")
+	}
+	if os.Getenv("HELM_REPOSITORY_CACHE") == "" {
+		os.Setenv("HELM_REPOSITORY_CACHE", "/.cache/helm/repository")
+	}
+	if os.Getenv("HELM_REGISTRY_CONFIG") == "" {
+		os.Setenv("HELM_REGISTRY_CONFIG", "/.config/helm/registry.json")
+	}
+
 	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	entryLog := ctrllog.Log.WithName("multicluster-entrypoint")
 	ctx := ctrl.SetupSignalHandler()
@@ -250,7 +262,14 @@ func RunMulticlusterExample() {
 			var locateErr error
 			if chartRefRepo != "" && versionValid {
 				_ = os.MkdirAll(settings.RepositoryCache, 0o755)
-				_ = os.MkdirAll(settings.RepositoryConfig, 0o755)
+				// settings.RepositoryConfig is a file path (repositories.yaml). Ensure parent dir and file.
+				if settings.RepositoryConfig != "" {
+					_ = os.MkdirAll(filepath.Dir(settings.RepositoryConfig), 0o755)
+					// Create file if missing to avoid Helm treating a directory-only path as invalid.
+					if _, statErr := os.Stat(settings.RepositoryConfig); os.IsNotExist(statErr) {
+						_ = os.WriteFile(settings.RepositoryConfig, []byte("{}\n"), 0o644)
+					}
+				}
 				cp := &action.ChartPathOptions{RepoURL: chartRefRepo, Version: chartRefVersion}
 				loc, err := cp.LocateChart(chartRefName, settings)
 				if err != nil {

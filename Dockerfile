@@ -47,6 +47,7 @@ ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 # Run as root for setup, then drop privileges
 USER 0
 RUN mkdir -p /.cache/helm/repository /.config/helm /.local/share/helm && \
+	touch /.config/helm/repositories.yaml && \
 	chown -R 65532:65532 /.cache /.config /.local
 USER 65532:65532
 ENTRYPOINT ["/crypto-edge-operator"]
