@@ -11,16 +11,23 @@ ARG COMMIT=unknown
 WORKDIR /workspace
 
 RUN apk add --no-cache git
-ENV GOTOOLCHAIN=auto
+ENV GOTOOLCHAIN=auto \
+	GOPROXY=https://proxy.golang.org,direct \
+	GOSUMDB=sum.golang.org \
+	GOMODCACHE=/go/pkg/mod \
+	GOCACHE=/root/.cache/go-build
 
+# Use BuildKit cache mounts to speed up and stabilize dependency downloads and builds
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+	go mod download
 
 COPY . .
 
 # Build static binary (CGO disabled) for target OS/Arch
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-	go build -trimpath -ldflags "-s -w" -o crypto-edge-operator ./cmd/crypto-edge-operator
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+	CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+	go build -v -trimpath -ldflags "-s -w" -o crypto-edge-operator ./cmd/crypto-edge-operator
 
 ###############################################
 # Final stage: minimal runtime image
