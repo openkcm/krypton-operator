@@ -42,10 +42,10 @@ import (
 	helmutil "github.com/openkcm/crypto-edge-operator/internal/helmutil"
 )
 
-// RunMulticlusterExample starts a multicluster manager that reconciles Tenants across discovered clusters.
+// RunOperator starts a multicluster manager that reconciles Tenants across discovered clusters.
 //
 //nolint:maintidx,gocyclo // complexity/maintainability accepted short-term; will refactor into helpers later
-func RunMulticlusterExample() {
+func RunOperator() {
 	var namespace string
 	var kubeconfigSecretLabel string
 	var kubeconfigSecretKey string
@@ -80,10 +80,10 @@ func RunMulticlusterExample() {
 	}
 
 	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	entryLog := ctrllog.Log.WithName("multicluster-entrypoint")
+	entryLog := ctrllog.Log.WithName("operator-entrypoint")
 	ctx := ctrl.SetupSignalHandler()
 
-	entryLog.Info("Starting multicluster example", "namespace", namespace, "kubeconfigSecretLabel", kubeconfigSecretLabel)
+	entryLog.Info("Starting multicluster crypto-edge-operator", "namespace", namespace, "kubeconfigSecretLabel", kubeconfigSecretLabel)
 
 	// Ensure a self kubeconfig secret exists so the provider at least manages the local cluster if user hasn't created one.
 	// This uses the in-cluster (or local) rest.Config to synthesise a kubeconfig and store it as a labeled secret.
