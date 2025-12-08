@@ -1,0 +1,7 @@
+apiVersion: mesh.openkcm.io/v1alpha1
+kind: Tenant
+metadata:
+  name: hello
+  namespace: default
+spec:
+  workspace: hellotenant
