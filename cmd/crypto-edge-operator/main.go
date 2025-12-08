@@ -1,5 +1,7 @@
 package main
 
-func main() {
+import "github.com/openkcm/crypto-edge-operator/internal/multicluster"
 
+func main() {
+	multicluster.RunMulticlusterExample()
 }
