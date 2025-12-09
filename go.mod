@@ -3,7 +3,7 @@ module github.com/openkcm/crypto-edge-operator
 go 1.25.4
 
 require (
-	github.com/Masterminds/semver/v3 v3.2.1
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/go-logr/logr v1.4.2 // indirect
 	helm.sh/helm/v3 v3.14.2
 	k8s.io/api v0.34.0
