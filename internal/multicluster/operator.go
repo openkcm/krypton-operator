@@ -154,7 +154,7 @@ func RunOperator() {
 				if apierrors.IsNotFound(err) || strings.Contains(strings.ToLower(err.Error()), "no match") {
 					// Cleanup on NotFound: attempt Helm uninstall across namespaces even if initial config fails
 					log.Info("tenant not found; starting NotFound helm cleanup")
-					releaseName := fmt.Sprintf("tenant-%s-%s", req.NamespacedName.Name, req.ClusterName)
+					releaseName := fmt.Sprintf("tenant-%s-%s", req.Name, req.ClusterName)
 					deletingReleases.Store(releaseName, true)
 					remoteCfg := cl.GetConfig()
 					getter := helmutil.NewRemoteRESTClientGetter(remoteCfg)
@@ -210,7 +210,8 @@ func RunOperator() {
 
 			// Check deletion guard immediately after fetch to prevent in-flight reconciles from upgrading
 			releaseName := fmt.Sprintf("tenant-%s-%s", tenant.Name, req.ClusterName)
-			if v, ok := deletingReleases.Load(releaseName); ok && v.(bool) {
+			if v, ok := deletingReleases.Load(releaseName); ok {
+				if b, ok2 := v.(bool); ok2 && b {
 				log.Info("deletion guard active after fetch; triggering uninstall", "release", releaseName)
 				wsName := tenant.Spec.Workspace
 				remoteCfg := cl.GetConfig()
@@ -223,6 +224,7 @@ func RunOperator() {
 					_, _ = un.Run(releaseName)
 				}
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
 			}
 
 			// Ensure cleanup finalizer exists so we receive DeletionTimestamp before object disappears
@@ -455,9 +457,9 @@ func RunOperator() {
 				// Remove finalizer to allow object deletion to complete
 				for i, f := range tenant.Finalizers {
 					if f == cleanupFinalizer {
-						new := tenant.DeepCopy()
-						new.Finalizers = append(append([]string{}, tenant.Finalizers[:i]...), tenant.Finalizers[i+1:]...)
-						if err := cl.GetClient().Patch(ctx, new, client.MergeFrom(tenant)); err != nil && !apierrors.IsNotFound(err) {
+						tenantCopy := tenant.DeepCopy()
+						tenantCopy.Finalizers = append(append([]string{}, tenant.Finalizers[:i]...), tenant.Finalizers[i+1:]...)
+						if err := cl.GetClient().Patch(ctx, tenantCopy, client.MergeFrom(tenant)); err != nil && !apierrors.IsNotFound(err) {
 							log.Error(err, "failed to remove cleanup finalizer")
 							return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 						}
@@ -627,13 +629,15 @@ func RunOperator() {
 			condErrorType := "ClusterError/" + req.ClusterName
 
 			// Pre-Helm-action guard: check deletion guard and fresh Tenant state before any Helm operations
-			if v, ok := deletingReleases.Load(releaseName); ok && v.(bool) {
+			if v, ok := deletingReleases.Load(releaseName); ok {
+				if b, ok2 := v.(bool); ok2 && b {
 				log.Info("deletion guard active before helm operations; triggering uninstall", "release", releaseName)
 				un := action.NewUninstall(aCfg)
 				un.Timeout = 120 * time.Second
 				un.IgnoreNotFound = true
 				_, _ = un.Run(releaseName)
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
 			}
 			// Also do a fresh fetch to catch any deletes that happened since the top-of-reconcile fetch
 			preActionCheck := &platformv1alpha1.Tenant{}
@@ -658,13 +662,15 @@ func RunOperator() {
 			progressType := "ClusterProgress/" + req.ClusterName
 			if !installed && loaded != nil {
 				// Final guard check immediately before install to catch any deletes that occurred during chart load
-				if v, ok := deletingReleases.Load(releaseName); ok && v.(bool) {
+				if v, ok := deletingReleases.Load(releaseName); ok {
+					if b, ok2 := v.(bool); ok2 && b {
 					log.Info("deletion guard active before install; skipping and uninstalling", "release", releaseName)
 					un := action.NewUninstall(aCfg)
 					un.Timeout = 120 * time.Second
 					un.IgnoreNotFound = true
 					_, _ = un.Run(releaseName)
 					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+					}
 				}
 				publishEvent(corev1.EventTypeNormal, "HelmInstallStart", releaseName)
 				inst := action.NewInstall(aCfg)
@@ -731,13 +737,15 @@ func RunOperator() {
 				upsertCondition(metav1.Condition{Type: condReadyType, Status: metav1.ConditionTrue, Reason: "Installed", Message: "release installed", ObservedGeneration: tenant.Generation, LastTransitionTime: metav1.Now()})
 			} else if installed && loaded != nil {
 				// Final guard check immediately before upgrade to catch any deletes that occurred during chart load
-				if v, ok := deletingReleases.Load(releaseName); ok && v.(bool) {
+				if v, ok := deletingReleases.Load(releaseName); ok {
+					if b, ok2 := v.(bool); ok2 && b {
 					log.Info("deletion guard active before upgrade; skipping and uninstalling", "release", releaseName)
 					un := action.NewUninstall(aCfg)
 					un.Timeout = 120 * time.Second
 					un.IgnoreNotFound = true
 					_, _ = un.Run(releaseName)
 					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+					}
 				}
 				publishEvent(corev1.EventTypeNormal, "HelmUpgradeStart", releaseName)
 				up := action.NewUpgrade(aCfg)
