@@ -1,6 +1,7 @@
 package multicluster
 
 import (
+	// Standard library
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,31 +15,31 @@ import (
 	"sync"
 	"time"
 
+	// External dependencies
 	"github.com/Masterminds/semver/v3"
+	action "helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-
-	action "helm.sh/helm/v3/pkg/action"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
+	// Internal modules
 	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 	helmutil "github.com/openkcm/crypto-edge-operator/internal/helmutil"
 )
@@ -212,18 +213,18 @@ func RunOperator() {
 			releaseName := fmt.Sprintf("tenant-%s-%s", tenant.Name, req.ClusterName)
 			if v, ok := deletingReleases.Load(releaseName); ok {
 				if b, ok2 := v.(bool); ok2 && b {
-				log.Info("deletion guard active after fetch; triggering uninstall", "release", releaseName)
-				wsName := tenant.Spec.Workspace
-				remoteCfg := cl.GetConfig()
-				getter := helmutil.NewRemoteRESTClientGetter(remoteCfg)
-				aCfg := new(action.Configuration)
-				if err := aCfg.Init(getter, wsName, os.Getenv("HELM_DRIVER"), func(format string, v ...any) { log.V(1).Info(fmt.Sprintf(format, v...)) }); err == nil {
-					un := action.NewUninstall(aCfg)
-					un.Timeout = 120 * time.Second
-					un.IgnoreNotFound = true
-					_, _ = un.Run(releaseName)
-				}
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+					log.Info("deletion guard active after fetch; triggering uninstall", "release", releaseName)
+					wsName := tenant.Spec.Workspace
+					remoteCfg := cl.GetConfig()
+					getter := helmutil.NewRemoteRESTClientGetter(remoteCfg)
+					aCfg := new(action.Configuration)
+					if err := aCfg.Init(getter, wsName, os.Getenv("HELM_DRIVER"), func(format string, v ...any) { log.V(1).Info(fmt.Sprintf(format, v...)) }); err == nil {
+						un := action.NewUninstall(aCfg)
+						un.Timeout = 120 * time.Second
+						un.IgnoreNotFound = true
+						_, _ = un.Run(releaseName)
+					}
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 				}
 			}
 
@@ -631,12 +632,12 @@ func RunOperator() {
 			// Pre-Helm-action guard: check deletion guard and fresh Tenant state before any Helm operations
 			if v, ok := deletingReleases.Load(releaseName); ok {
 				if b, ok2 := v.(bool); ok2 && b {
-				log.Info("deletion guard active before helm operations; triggering uninstall", "release", releaseName)
-				un := action.NewUninstall(aCfg)
-				un.Timeout = 120 * time.Second
-				un.IgnoreNotFound = true
-				_, _ = un.Run(releaseName)
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+					log.Info("deletion guard active before helm operations; triggering uninstall", "release", releaseName)
+					un := action.NewUninstall(aCfg)
+					un.Timeout = 120 * time.Second
+					un.IgnoreNotFound = true
+					_, _ = un.Run(releaseName)
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 				}
 			}
 			// Also do a fresh fetch to catch any deletes that happened since the top-of-reconcile fetch
@@ -664,12 +665,12 @@ func RunOperator() {
 				// Final guard check immediately before install to catch any deletes that occurred during chart load
 				if v, ok := deletingReleases.Load(releaseName); ok {
 					if b, ok2 := v.(bool); ok2 && b {
-					log.Info("deletion guard active before install; skipping and uninstalling", "release", releaseName)
-					un := action.NewUninstall(aCfg)
-					un.Timeout = 120 * time.Second
-					un.IgnoreNotFound = true
-					_, _ = un.Run(releaseName)
-					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+						log.Info("deletion guard active before install; skipping and uninstalling", "release", releaseName)
+						un := action.NewUninstall(aCfg)
+						un.Timeout = 120 * time.Second
+						un.IgnoreNotFound = true
+						_, _ = un.Run(releaseName)
+						return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 					}
 				}
 				publishEvent(corev1.EventTypeNormal, "HelmInstallStart", releaseName)
@@ -739,12 +740,12 @@ func RunOperator() {
 				// Final guard check immediately before upgrade to catch any deletes that occurred during chart load
 				if v, ok := deletingReleases.Load(releaseName); ok {
 					if b, ok2 := v.(bool); ok2 && b {
-					log.Info("deletion guard active before upgrade; skipping and uninstalling", "release", releaseName)
-					un := action.NewUninstall(aCfg)
-					un.Timeout = 120 * time.Second
-					un.IgnoreNotFound = true
-					_, _ = un.Run(releaseName)
-					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+						log.Info("deletion guard active before upgrade; skipping and uninstalling", "release", releaseName)
+						un := action.NewUninstall(aCfg)
+						un.Timeout = 120 * time.Second
+						un.IgnoreNotFound = true
+						_, _ = un.Run(releaseName)
+						return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 					}
 				}
 				publishEvent(corev1.EventTypeNormal, "HelmUpgradeStart", releaseName)
