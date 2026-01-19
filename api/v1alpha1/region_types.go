@@ -1,8 +1,8 @@
 package v1alpha1
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // RegionSpec defines configuration for an edge region/cluster.
@@ -19,9 +19,9 @@ type RegionSpec struct {
 // Region maps a logical region name to its kubeconfig Secret reference.
 type Region struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"` //nolint:modernize
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec RegionSpec `json:"spec,omitempty"` //nolint:modernize
+	Spec RegionSpec `json:"spec,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -29,7 +29,7 @@ type Region struct {
 // RegionList contains a list of Region.
 type RegionList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"` //nolint:modernize
+	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []Region `json:"items"`
 }
