@@ -36,10 +36,9 @@ func EnsureTenantCRD(ctx context.Context, c client.Client) error {
 	var lastErr error
 	for attempt := range 5 { // Go 1.25 int range loop
 		getErr := c.Get(ctx, client.ObjectKey{Name: crd.GetName()}, crd)
-		if getErr == nil {
-			return nil // already exists
-		}
-		if getErr != nil && !apierrors.IsNotFound(getErr) {
+		if apierrors.IsNotFound(getErr) {
+			// proceed to create
+		} else if getErr != nil {
 			// Transient network errors often show 'connection refused' or 'context canceled'. Retry those; abort others.
 			errStr := getErr.Error()
 			if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "Client.Timeout") {
@@ -48,6 +47,8 @@ func EnsureTenantCRD(ctx context.Context, c client.Client) error {
 				continue
 			}
 			return fmt.Errorf("get CRD failed: %w", getErr)
+		} else {
+			return nil // already exists
 		}
 		// NotFound: proceed to create.
 		obj := &unstructured.Unstructured{}
