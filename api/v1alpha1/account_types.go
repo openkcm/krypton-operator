@@ -29,10 +29,10 @@ type AccountStatus struct {
 // An Account can own multiple CryptoEdgeDeployments.
 type Account struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"` //nolint:modernize
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AccountSpec   `json:"spec,omitempty"`   //nolint:modernize
-	Status AccountStatus `json:"status,omitempty"` //nolint:modernize
+	Spec   AccountSpec   `json:"spec,omitempty"`
+	Status AccountStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -40,7 +40,7 @@ type Account struct {
 // AccountList contains a list of Account.
 type AccountList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"` //nolint:modernize
+	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []Account `json:"items"`
 }

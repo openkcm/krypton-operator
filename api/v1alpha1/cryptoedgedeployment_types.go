@@ -55,10 +55,10 @@ type CryptoEdgeDeploymentStatus struct {
 // The name of the CryptoEdgeDeployment is used as the namespace name in the target cluster.
 type CryptoEdgeDeployment struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"` //nolint:modernize
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   CryptoEdgeDeploymentSpec   `json:"spec,omitempty"`   //nolint:modernize
-	Status CryptoEdgeDeploymentStatus `json:"status,omitempty"` //nolint:modernize
+	Spec   CryptoEdgeDeploymentSpec   `json:"spec,omitempty"`
+	Status CryptoEdgeDeploymentStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -66,7 +66,7 @@ type CryptoEdgeDeployment struct {
 // CryptoEdgeDeploymentList contains a list of CryptoEdgeDeployment.
 type CryptoEdgeDeploymentList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"` //nolint:modernize
+	metav1.ListMeta `json:"metadata,omitempty"`
 
 	Items []CryptoEdgeDeployment `json:"items"`
 }
