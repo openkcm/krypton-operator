@@ -29,8 +29,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
 	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 	helmutil "github.com/openkcm/crypto-edge-operator/internal/helmutil"
@@ -232,63 +232,9 @@ func reconcileCED(
 	log.Info("account validated", "account", deployment.Spec.AccountRef.Name)
 	recorder.Event(deployment, corev1.EventTypeNormal, "AccountValidated", "Account "+deployment.Spec.AccountRef.Name+" validated")
 
-	// Handle deletion with finalizer: uninstall helm release and delete namespace on edge
+	// Handle deletion fast-path
 	if !deployment.DeletionTimestamp.IsZero() {
-		targetSecretName := ""
-		regionName := deployment.Spec.TargetRegion
-		if deployment.Spec.RegionRef != nil && deployment.Spec.RegionRef.Name != "" {
-			regionName = deployment.Spec.RegionRef.Name
-		}
-		region := &platformv1alpha1.Region{}
-		if err := homeMgr.GetClient().Get(ctx, client.ObjectKey{Name: regionName, Namespace: namespace}, region); err == nil {
-			if region.Spec.KubeconfigSecretName != "" {
-				targetSecretName = region.Spec.KubeconfigSecretName
-			}
-		}
-		if targetSecretName == "" {
-			targetSecretName = regionName + "-kubeconfig"
-		}
-		log.Info("deletion: routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
-		recorder.Event(deployment, corev1.EventTypeNormal, "DeleteStarted", "Routing delete to region "+deployment.Spec.TargetRegion)
-
-		edgeCluster, err := mgr.GetCluster(ctx, targetSecretName)
-		if err != nil {
-			log.Error(err, "deletion: failed to get edge cluster", "targetRegion", deployment.Spec.TargetRegion)
-		} else {
-			releaseName := "ced-" + deployment.Name
-			if err := uninstallHelmChart(ctx, log, edgeCluster, deployment.Name, releaseName); err != nil {
-				log.Error(err, "deletion: helm uninstall failed", "release", releaseName)
-				recorder.Event(deployment, corev1.EventTypeWarning, "HelmUninstallFailed", err.Error())
-			} else {
-				log.Info("deletion: helm uninstall succeeded", "release", releaseName)
-				recorder.Event(deployment, corev1.EventTypeNormal, "HelmUninstalled", "Uninstalled release "+releaseName)
-			}
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: deployment.Name}}
-			if err := edgeCluster.GetClient().Delete(ctx, ns); err != nil {
-				if !apierrors.IsNotFound(err) {
-					log.Error(err, "deletion: failed to delete namespace", "namespace", deployment.Name)
-				}
-			} else {
-				log.Info("deletion: namespace delete requested", "namespace", deployment.Name)
-				recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceDeleteRequested", "Requested deletion for namespace "+deployment.Name)
-			}
-		}
-
-		finalizers := deployment.GetFinalizers()
-		newFinalizers := make([]string, 0, len(finalizers))
-		for _, f := range finalizers {
-			if f != finalizerName {
-				newFinalizers = append(newFinalizers, f)
-			}
-		}
-		deployment.SetFinalizers(newFinalizers)
-		if err := homeMgr.GetClient().Update(ctx, deployment); err != nil {
-			log.Error(err, "deletion: failed to remove finalizer")
-			return reconcile.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-		log.Info("deletion: finalizer removed")
-		recorder.Event(deployment, corev1.EventTypeNormal, "FinalizerRemoved", "Finalizer removed, deletion complete")
-		return reconcile.Result{}, nil
+		return rcedHandleDelete(ctx, log, homeMgr, mgr, namespace, recorder, deployment)
 	}
 
 	foundFinalizer := false
@@ -308,20 +254,7 @@ func reconcileCED(
 		recorder.Event(deployment, corev1.EventTypeNormal, "FinalizerAdded", "Finalizer added for cleanup on delete")
 	}
 
-	targetSecretName := ""
-	regionName := deployment.Spec.TargetRegion
-	if deployment.Spec.RegionRef != nil && deployment.Spec.RegionRef.Name != "" {
-		regionName = deployment.Spec.RegionRef.Name
-	}
-	region := &platformv1alpha1.Region{}
-	if err := homeMgr.GetClient().Get(ctx, client.ObjectKey{Name: regionName, Namespace: namespace}, region); err == nil {
-		if region.Spec.KubeconfigSecretName != "" {
-			targetSecretName = region.Spec.KubeconfigSecretName
-		}
-	}
-	if targetSecretName == "" {
-		targetSecretName = regionName + "-kubeconfig"
-	}
+	targetSecretName, regionName := rcedResolveTarget(ctx, homeMgr, namespace, deployment)
 	log.Info("routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
 	recorder.Event(deployment, corev1.EventTypeNormal, "Routing", "Routing to region "+deployment.Spec.TargetRegion)
 
@@ -337,6 +270,91 @@ func reconcileCED(
 	}
 
 	nsName := deployment.Name
+	if res, err := rcedEnsureNamespace(ctx, log, edgeCluster, nsName, deployment, recorder); err != nil || res.RequeueAfter > 0 {
+		return res, err
+	}
+
+	return rcedDeployAndStatus(ctx, log, homeMgr, edgeCluster, nsName, chartRepo, chartName, chartVersion, deployment, recorder, setReadyCondition)
+}
+
+func rcedHandleDelete(
+	ctx context.Context,
+	log logr.Logger,
+	homeMgr ctrl.Manager,
+	mgr mcmanager.Manager,
+	namespace string,
+	recorder record.EventRecorder,
+	deployment *platformv1alpha1.CryptoEdgeDeployment,
+) (reconcile.Result, error) {
+	const finalizerName = "mesh.openkcm.io/cryptoedgedeployment-finalizer"
+	targetSecretName, regionName := rcedResolveTarget(ctx, homeMgr, namespace, deployment)
+	log.Info("deletion: routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
+	recorder.Event(deployment, corev1.EventTypeNormal, "DeleteStarted", "Routing delete to region "+deployment.Spec.TargetRegion)
+	edgeCluster, err := mgr.GetCluster(ctx, targetSecretName)
+	if err == nil {
+		releaseName := "ced-" + deployment.Name
+		if err := uninstallHelmChart(ctx, log, edgeCluster, deployment.Name, releaseName); err != nil {
+			log.Error(err, "deletion: helm uninstall failed", "release", releaseName)
+			recorder.Event(deployment, corev1.EventTypeWarning, "HelmUninstallFailed", err.Error())
+		} else {
+			log.Info("deletion: helm uninstall succeeded", "release", releaseName)
+			recorder.Event(deployment, corev1.EventTypeNormal, "HelmUninstalled", "Uninstalled release "+releaseName)
+		}
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: deployment.Name}}
+		if err := edgeCluster.GetClient().Delete(ctx, ns); err != nil {
+			if !apierrors.IsNotFound(err) {
+				log.Error(err, "deletion: failed to delete namespace", "namespace", deployment.Name)
+			}
+		} else {
+			log.Info("deletion: namespace delete requested", "namespace", deployment.Name)
+			recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceDeleteRequested", "Requested deletion for namespace "+deployment.Name)
+		}
+	} else {
+		log.Error(err, "deletion: failed to get edge cluster", "targetRegion", deployment.Spec.TargetRegion)
+	}
+	// remove finalizer
+	finalizers := deployment.GetFinalizers()
+	newFinalizers := make([]string, 0, len(finalizers))
+	for _, f := range finalizers {
+		if f != finalizerName {
+			newFinalizers = append(newFinalizers, f)
+		}
+	}
+	deployment.SetFinalizers(newFinalizers)
+	if err := homeMgr.GetClient().Update(ctx, deployment); err != nil {
+		log.Error(err, "deletion: failed to remove finalizer")
+		return reconcile.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	log.Info("deletion: finalizer removed")
+	recorder.Event(deployment, corev1.EventTypeNormal, "FinalizerRemoved", "Finalizer removed, deletion complete")
+	return reconcile.Result{}, nil
+}
+
+func rcedResolveTarget(ctx context.Context, homeMgr ctrl.Manager, namespace string, deployment *platformv1alpha1.CryptoEdgeDeployment) (secretName, regionName string) {
+	regionName = deployment.Spec.TargetRegion
+	if deployment.Spec.RegionRef != nil && deployment.Spec.RegionRef.Name != "" {
+		regionName = deployment.Spec.RegionRef.Name
+	}
+	region := &platformv1alpha1.Region{}
+	if err := homeMgr.GetClient().Get(ctx, client.ObjectKey{Name: regionName, Namespace: namespace}, region); err == nil {
+		if region.Spec.KubeconfigSecretName != "" {
+			secretName = region.Spec.KubeconfigSecretName
+		}
+	}
+	if secretName == "" {
+		secretName = regionName + "-kubeconfig"
+	}
+	return secretName, regionName
+}
+
+func rcedEnsureNamespace(
+	ctx context.Context,
+	log logr.Logger,
+	edgeCluster cluster.Cluster,
+	nsName string,
+	deployment *platformv1alpha1.CryptoEdgeDeployment,
+	recorder record.EventRecorder,
+) (reconcile.Result, error) {
 	ns := &corev1.Namespace{}
 	if err := edgeCluster.GetClient().Get(ctx, client.ObjectKey{Name: nsName}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -352,7 +370,20 @@ func reconcileCED(
 			return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}
+	return reconcile.Result{}, nil
+}
 
+func rcedDeployAndStatus(
+	ctx context.Context,
+	log logr.Logger,
+	homeMgr ctrl.Manager,
+	edgeCluster cluster.Cluster,
+	nsName string,
+	chartRepo, chartName, chartVersion string,
+	deployment *platformv1alpha1.CryptoEdgeDeployment,
+	recorder record.EventRecorder,
+	setReadyCondition func(*platformv1alpha1.CryptoEdgeDeployment, metav1.ConditionStatus, string, string),
+) (reconcile.Result, error) {
 	releaseName := "ced-" + deployment.Name
 	if err := deployHelmChart(ctx, log, edgeCluster, nsName, releaseName, chartRepo, chartName, chartVersion); err != nil {
 		log.Error(err, "helm deployment failed")
@@ -373,7 +404,6 @@ func reconcileCED(
 	if err := homeMgr.GetClient().Status().Update(ctx, deployment); err != nil {
 		log.Error(err, "failed to update status")
 	}
-
 	log.Info("deployment reconciled successfully", "region", deployment.Spec.TargetRegion)
 	recorder.Event(deployment, corev1.EventTypeNormal, "Ready", "Deployment ready in region "+deployment.Spec.TargetRegion)
 	return reconcile.Result{}, nil
