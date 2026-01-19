@@ -46,7 +46,7 @@ func (in *TenantStatus) DeepCopy() *TenantStatus {
 	return out
 }
 
-// Account DeepCopy methods
+// DeepCopyInto copies the receiver into out. in must be non-nil.
 // DeepCopyInto copies the receiver into out. in must be non-nil.
 func (in *AccountSpec) DeepCopyInto(out *AccountSpec) {
 	*out = *in
@@ -80,7 +80,7 @@ func (in *AccountStatus) DeepCopy() *AccountStatus {
 	return out
 }
 
-// CryptoEdgeDeployment DeepCopy methods
+// DeepCopyInto copies the receiver into out. in must be non-nil.
 // DeepCopyInto copies the receiver into out. in must be non-nil.
 func (in *AccountRef) DeepCopyInto(out *AccountRef) {
 	*out = *in
@@ -236,7 +236,7 @@ func (in *CryptoEdgeDeploymentList) DeepCopyInto(out *CryptoEdgeDeploymentList) 
 	}
 }
 
-// Region DeepCopy methods
+// DeepCopyInto copies the receiver into out. in must be non-nil.
 // DeepCopyInto copies the receiver into out. in must be non-nil.
 func (in *RegionSpec) DeepCopyInto(out *RegionSpec) {
 	*out = *in

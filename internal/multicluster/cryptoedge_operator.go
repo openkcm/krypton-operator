@@ -198,14 +198,14 @@ func RunCryptoEdgeOperator() {
 			if err := homeMgr.GetClient().Get(ctx, accountKey, account); err != nil {
 				log.Error(err, "account not found", "account", deployment.Spec.AccountRef.Name)
 				deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseError
-				deployment.Status.LastMessage = fmt.Sprintf("Account %s not found", deployment.Spec.AccountRef.Name)
+				deployment.Status.LastMessage = "Account " + deployment.Spec.AccountRef.Name + " not found"
 				setReadyCondition(deployment, metav1.ConditionFalse, "AccountNotFound", deployment.Status.LastMessage)
 				_ = homeMgr.GetClient().Status().Update(ctx, deployment)
 				recorder.Event(deployment, corev1.EventTypeWarning, "AccountNotFound", deployment.Status.LastMessage)
 				return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 			}
 			log.Info("account validated", "account", deployment.Spec.AccountRef.Name)
-			recorder.Event(deployment, corev1.EventTypeNormal, "AccountValidated", fmt.Sprintf("Account %s validated", deployment.Spec.AccountRef.Name))
+			recorder.Event(deployment, corev1.EventTypeNormal, "AccountValidated", "Account " + deployment.Spec.AccountRef.Name + " validated")
 
 			// Handle deletion with finalizer: uninstall helm release and delete namespace on edge
 			if !deployment.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -222,23 +222,23 @@ func RunCryptoEdgeOperator() {
 					}
 				}
 				if targetSecretName == "" {
-					targetSecretName = fmt.Sprintf("%s-kubeconfig", regionName)
+					targetSecretName = regionName + "-kubeconfig"
 				}
 				log.Info("deletion: routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
-				recorder.Event(deployment, corev1.EventTypeNormal, "DeleteStarted", fmt.Sprintf("Routing delete to region %s", deployment.Spec.TargetRegion))
+				recorder.Event(deployment, corev1.EventTypeNormal, "DeleteStarted", "Routing delete to region " + deployment.Spec.TargetRegion)
 
 				edgeCluster, err := mgr.GetCluster(ctx, targetSecretName)
 				if err != nil {
 					log.Error(err, "deletion: failed to get edge cluster", "targetRegion", deployment.Spec.TargetRegion)
 				} else {
 					// Attempt helm uninstall
-					releaseName := fmt.Sprintf("ced-%s", deployment.Name)
+					releaseName := "ced-" + deployment.Name
 					if err := uninstallHelmChart(ctx, log, edgeCluster, deployment.Name, releaseName); err != nil {
 						log.Error(err, "deletion: helm uninstall failed", "release", releaseName)
 						recorder.Event(deployment, corev1.EventTypeWarning, "HelmUninstallFailed", err.Error())
 					} else {
 						log.Info("deletion: helm uninstall succeeded", "release", releaseName)
-						recorder.Event(deployment, corev1.EventTypeNormal, "HelmUninstalled", fmt.Sprintf("Uninstalled release %s", releaseName))
+						recorder.Event(deployment, corev1.EventTypeNormal, "HelmUninstalled", "Uninstalled release " + releaseName)
 					}
 					// Delete namespace on edge cluster
 					ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: deployment.Name}}
@@ -248,7 +248,7 @@ func RunCryptoEdgeOperator() {
 						}
 					} else {
 						log.Info("deletion: namespace delete requested", "namespace", deployment.Name)
-						recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceDeleteRequested", fmt.Sprintf("Requested deletion for namespace %s", deployment.Name))
+						recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceDeleteRequested", "Requested deletion for namespace " + deployment.Name)
 					}
 				}
 
@@ -301,17 +301,17 @@ func RunCryptoEdgeOperator() {
 				}
 			}
 			if targetSecretName == "" {
-				targetSecretName = fmt.Sprintf("%s-kubeconfig", regionName)
+				targetSecretName = regionName + "-kubeconfig"
 			}
 			log.Info("routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
-			recorder.Event(deployment, corev1.EventTypeNormal, "Routing", fmt.Sprintf("Routing to region %s", deployment.Spec.TargetRegion))
+			recorder.Event(deployment, corev1.EventTypeNormal, "Routing", "Routing to region " + deployment.Spec.TargetRegion)
 
 			// Get target edge cluster from multicluster manager
 			edgeCluster, err := mgr.GetCluster(ctx, targetSecretName)
 			if err != nil {
 				log.Error(err, "failed to get edge cluster", "targetRegion", deployment.Spec.TargetRegion)
 				deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseError
-				deployment.Status.LastMessage = fmt.Sprintf("Edge cluster %s not available", deployment.Spec.TargetRegion)
+				deployment.Status.LastMessage = "Edge cluster " + deployment.Spec.TargetRegion + " not available"
 				setReadyCondition(deployment, metav1.ConditionFalse, "EdgeUnavailable", deployment.Status.LastMessage)
 				_ = homeMgr.GetClient().Status().Update(ctx, deployment)
 				recorder.Event(deployment, corev1.EventTypeWarning, "EdgeUnavailable", deployment.Status.LastMessage)
@@ -331,7 +331,7 @@ func RunCryptoEdgeOperator() {
 						return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 					}
 					log.Info("created namespace on edge cluster", "namespace", nsName, "region", deployment.Spec.TargetRegion)
-					recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceCreated", fmt.Sprintf("Namespace %s created on %s", nsName, deployment.Spec.TargetRegion))
+					recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceCreated", "Namespace " + nsName + " created on " + deployment.Spec.TargetRegion)
 				} else {
 					log.Error(err, "failed to check namespace")
 					return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
@@ -339,30 +339,30 @@ func RunCryptoEdgeOperator() {
 			}
 
 			// Deploy Helm chart to edge cluster
-			releaseName := fmt.Sprintf("ced-%s", deployment.Name)
+			releaseName := "ced-" + deployment.Name
 			if err := deployHelmChart(ctx, log, edgeCluster, nsName, releaseName, chartRepo, chartName, chartVersion); err != nil {
 				log.Error(err, "helm deployment failed")
 				deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseError
-				deployment.Status.LastMessage = fmt.Sprintf("Helm deployment failed: %v", err)
+				deployment.Status.LastMessage = "Helm deployment failed: " + err.Error()
 				setReadyCondition(deployment, metav1.ConditionFalse, "HelmFailed", deployment.Status.LastMessage)
 				_ = homeMgr.GetClient().Status().Update(ctx, deployment)
 				recorder.Event(deployment, corev1.EventTypeWarning, "HelmDeployFailed", deployment.Status.LastMessage)
 				return reconcile.Result{RequeueAfter: 60 * time.Second}, nil
 			}
 			log.Info("helm deploy succeeded", "release", releaseName, "namespace", nsName)
-			recorder.Event(deployment, corev1.EventTypeNormal, "HelmDeployed", fmt.Sprintf("Release %s deployed to %s", releaseName, nsName))
+			recorder.Event(deployment, corev1.EventTypeNormal, "HelmDeployed", "Release " + releaseName + " deployed to " + nsName)
 
 			// Update status to Ready
 			deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseReady
-			deployment.Status.LastMessage = fmt.Sprintf("Successfully deployed to region %s", deployment.Spec.TargetRegion)
-			deployment.Status.LastAppliedChart = fmt.Sprintf("%s/%s:%s", chartRepo, chartName, chartVersion)
-			setReadyCondition(deployment, metav1.ConditionTrue, "Deployed", fmt.Sprintf("Successfully deployed to region %s", deployment.Spec.TargetRegion))
+			deployment.Status.LastMessage = "Successfully deployed to region " + deployment.Spec.TargetRegion
+			deployment.Status.LastAppliedChart = chartRepo + "/" + chartName + ":" + chartVersion
+			setReadyCondition(deployment, metav1.ConditionTrue, "Deployed", "Successfully deployed to region " + deployment.Spec.TargetRegion)
 			if err := homeMgr.GetClient().Status().Update(ctx, deployment); err != nil {
 				log.Error(err, "failed to update status")
 			}
 
 			log.Info("deployment reconciled successfully", "region", deployment.Spec.TargetRegion)
-			recorder.Event(deployment, corev1.EventTypeNormal, "Ready", fmt.Sprintf("Deployment ready in region %s", deployment.Spec.TargetRegion))
+			recorder.Event(deployment, corev1.EventTypeNormal, "Ready", "Deployment ready in region " + deployment.Spec.TargetRegion)
 			return reconcile.Result{}, nil
 		})); err != nil {
 		entryLog.Error(err, "Unable to create home controller")
@@ -397,9 +397,14 @@ func deployHelmChart(ctx context.Context, log logr.Logger, edgeCluster cluster.C
 	// Download chart from direct tarball URL into a temp file, then load
 	settings := cli.New()
 	_ = settings // reserved for future use if needed
-	chartTarURL := fmt.Sprintf("%s/%s-%s.tgz", chartRepo, chartName, chartVersion)
+	chartTarURL := chartRepo + "/" + chartName + "-" + chartVersion + ".tgz"
 
-	resp, err := http.Get(chartTarURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, chartTarURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build download request: %w", err)
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download chart: %w", err)
 	}
@@ -407,7 +412,7 @@ func deployHelmChart(ctx context.Context, log logr.Logger, edgeCluster cluster.C
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to download chart: status %d", resp.StatusCode)
 	}
-	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s.tgz", chartName, chartVersion))
+	tmpPath := filepath.Join(os.TempDir(), chartName+"-"+chartVersion+".tgz")
 	out, err := os.Create(tmpPath)
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
