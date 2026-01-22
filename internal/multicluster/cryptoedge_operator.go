@@ -33,10 +33,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	secretprovider "github.com/openkcm/crypto-edge-operator/multicluster/secretprovider"
-
 	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 	helmutil "github.com/openkcm/crypto-edge-operator/internal/helmutil"
+	secretprovider "github.com/openkcm/crypto-edge-operator/multicluster/secretprovider"
 )
 
 // RunCryptoEdgeOperator starts the operator for CryptoEdgeDeployment resources.
