@@ -82,17 +82,14 @@ func (in *AccountStatus) DeepCopy() *AccountStatus {
 }
 
 // DeepCopyInto copies the receiver into out. in must be non-nil.
-// DeepCopyInto copies the receiver into out. in must be non-nil.
-func (in *AccountRef) DeepCopyInto(out *AccountRef) {
-	*out = *in
-}
+func (in *AccountInfo) DeepCopyInto(out *AccountInfo) { *out = *in }
 
-// DeepCopy creates a new deep-copied AccountRef.
-func (in *AccountRef) DeepCopy() *AccountRef {
+// DeepCopy creates a new deep-copied AccountInfo.
+func (in *AccountInfo) DeepCopy() *AccountInfo {
 	if in == nil {
 		return nil
 	}
-	out := new(AccountRef)
+	out := new(AccountInfo)
 	in.DeepCopyInto(out)
 	return out
 }
@@ -100,11 +97,8 @@ func (in *AccountRef) DeepCopy() *AccountRef {
 // DeepCopyInto copies the receiver into out. in must be non-nil.
 func (in *CryptoEdgeDeploymentSpec) DeepCopyInto(out *CryptoEdgeDeploymentSpec) {
 	*out = *in
-	out.AccountRef = in.AccountRef
-	if in.RegionRef != nil {
-		out.RegionRef = new(RegionRef)
-		in.RegionRef.DeepCopyInto(out.RegionRef)
-	}
+	out.Account = in.Account
+	out.Region = in.Region
 }
 
 // DeepCopy creates a new deep-copied CryptoEdgeDeploymentSpec.
@@ -139,16 +133,47 @@ func (in *CryptoEdgeDeploymentStatus) DeepCopy() *CryptoEdgeDeploymentStatus {
 }
 
 // DeepCopyInto copies the receiver into out. in must be non-nil.
-func (in *RegionRef) DeepCopyInto(out *RegionRef) {
+func (in *RegionInfo) DeepCopyInto(out *RegionInfo) {
 	*out = *in
+	if in.Kubeconfig != nil {
+		out.Kubeconfig = new(KubeconfigRef)
+		// Deep copy of nested SecretRef (value type)
+		out.Kubeconfig.Secret = in.Kubeconfig.Secret
+	}
 }
 
-// DeepCopy creates a new deep-copied RegionRef.
-func (in *RegionRef) DeepCopy() *RegionRef {
+// DeepCopy creates a new deep-copied RegionInfo.
+func (in *RegionInfo) DeepCopy() *RegionInfo {
 	if in == nil {
 		return nil
 	}
-	out := new(RegionRef)
+	out := new(RegionInfo)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies the receiver into out. in must be non-nil.
+func (in *KubeconfigRef) DeepCopyInto(out *KubeconfigRef) { *out = *in }
+
+// DeepCopy creates a new deep-copied KubeconfigRef.
+func (in *KubeconfigRef) DeepCopy() *KubeconfigRef {
+	if in == nil {
+		return nil
+	}
+	out := new(KubeconfigRef)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies the receiver into out. in must be non-nil.
+func (in *SecretRef) DeepCopyInto(out *SecretRef) { *out = *in }
+
+// DeepCopy creates a new deep-copied SecretRef.
+func (in *SecretRef) DeepCopy() *SecretRef {
+	if in == nil {
+		return nil
+	}
+	out := new(SecretRef)
 	in.DeepCopyInto(out)
 	return out
 }

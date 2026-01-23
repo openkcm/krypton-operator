@@ -1,11 +1,11 @@
 # crypto-edge-operator Helm Chart
 
-Helm chart to deploy the Crypto Edge Operator responsible for reconciling `Tenant` custom resources (CRD: `tenants.mesh.openkcm.io`).
+Helm chart to deploy the Crypto Edge Operator responsible for reconciling `CryptoEdgeDeployment` custom resources (CRD: `cryptoedgedeployments.mesh.openkcm.io`).
 
 ## Features
 - Deploys controller manager Deployment
 - Installs ServiceAccount, ClusterRole, ClusterRoleBinding
-- Installs CRD for `Tenant` resources
+- Installs CRD for `CryptoEdgeDeployment` resources
 - Configurable image registry/repository/tag or digest
 - Health and readiness probes
 - Optional pod disruption budget & autoscaling stubs
@@ -39,20 +39,20 @@ helm install crypto-edge-operator ./charts/crypto-edge-operator \
 | `chart.version` | Central Helm chart version | `1.19.1` |
 | `chart.installCRDs` | Pass installCRDs Helm value (first install) | `true` |
 | `discovery.namespace` | Namespace containing kubeconfig secrets (`-namespace`) | `platform-system` |
-| `discovery.kubeconfigLabel` | Label selecting kubeconfig secrets (`-kubeconfig-label`) | `sigs.k8s.io/multicluster-runtime-kubeconfig` |
-| `discovery.kubeconfigKey` | Data key for kubeconfig content (`-kubeconfig-key`) | `kubeconfig` |
+| `discovery.kubeconfigLabel` | Deprecated: label-based discovery is no longer used |  |
+| `discovery.kubeconfigKey` | Deprecated: fixed key usage is no longer used |  |
 | `populateArgs` | Auto-generate container args from values | `true` |
 ## Operator Flags via Values
 ### CRDs/RBAC-only Mode
 
-Set `installMode.crdsRbacOnly=true` to install only the `Tenant` CRD and RBAC bindings on the target cluster. In this mode:
+Set `installMode.crdsRbacOnly=true` to install only the `CryptoEdgeDeployment` CRD and RBAC bindings on the target cluster. In this mode:
 - No ServiceAccount is created unless `serviceAccount.create=true`. Set `serviceAccount.create=false` to use an existing ServiceAccount.
 - The `ClusterRoleBinding` will reference the name from `serviceAccount.name`. Ensure that ServiceAccount exists in the release namespace.
 - The Deployment, Service, HPA, and PDB resources are skipped.
 
 Example:
 ```bash
-helm install tenants-crds-rbac ./charts/crypto-edge-operator \
+helm install cryptoedgedeployments-crds-rbac ./charts/crypto-edge-operator \
   --set installMode.crdsRbacOnly=true \
   --set serviceAccount.create=false \
   --set serviceAccount.name=crypto-edge-operator \
@@ -64,12 +64,9 @@ If `populateArgs=true` and `image.args` is empty, the chart will synthesize cont
 
 ```text
 -namespace=<discovery.namespace>
--kubeconfig-label=<discovery.kubeconfigLabel>
--kubeconfig-key=<discovery.kubeconfigKey>
 -chart-repo=<chart.repo>
 -chart-name=<chart.name>
 -chart-version=<chart.version>
--chart-install-crds=<chart.installCRDs>
 ```
 
 To override or add flags manually, set `image.args` explicitly; auto population is skipped.
@@ -81,7 +78,7 @@ See `values.yaml` for full list.
 Increment `Chart.yaml` version when template changes. Update `appVersion` when operator code changes.
 
 ## CRD
-The chart installs the `Tenant` CRD. If you need to disable CRD installation for GitOps management, you can remove the file under `crds/` or introduce a boolean gate (future enhancement).
+The chart installs the `CryptoEdgeDeployment` CRD. If you need to disable CRD installation for GitOps management, you can remove the file under `crds/` or introduce a boolean gate (future enhancement).
 
 ## Uninstall
 ```bash
@@ -89,7 +86,7 @@ helm uninstall crypto-edge-operator -n crypto-edge-system
 ```
 The CRD will remain (Helm leaves CRDs by default); delete manually if desired:
 ```bash
-kubectl delete crd tenants.mesh.openkcm.io
+kubectl delete crd cryptoedgedeployments.mesh.openkcm.io
 ```
 
 ## Development

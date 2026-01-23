@@ -32,10 +32,10 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
 	platformv1alpha1 "github.com/openkcm/crypto-edge-operator/api/v1alpha1"
 	helmutil "github.com/openkcm/crypto-edge-operator/internal/helmutil"
+	secretprovider "github.com/openkcm/crypto-edge-operator/multicluster/secretprovider"
 )
 
 // RunCryptoEdgeOperator starts the operator for CryptoEdgeDeployment resources.
@@ -106,6 +106,17 @@ func RunCryptoEdgeOperator() {
 	_ = clientgoscheme.AddToScheme(edgeScheme)
 	_ = platformv1alpha1.AddToScheme(edgeScheme)
 
+	// Controller on home cluster using standard controller-runtime manager
+	homeMgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme:                 homeScheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "",
+	})
+	if err != nil {
+		entryLog.Error(err, "Unable to create home manager")
+		os.Exit(1)
+	}
+
 	// Setup kubeconfig provider for multicluster
 	// Use minimal scheme for provider so edge clusters don't try to list platform CRDs
 	providerScheme := runtime.NewScheme()
@@ -113,15 +124,8 @@ func RunCryptoEdgeOperator() {
 	// Add platform CRDs to the scheme so manager can read them, but edge clusters won't have them
 	_ = platformv1alpha1.AddToScheme(providerScheme)
 
-	providerOpts := kubeconfigprovider.Options{
-		Namespace:             namespace,
-		KubeconfigSecretLabel: kubeconfigSecretLabel,
-		KubeconfigSecretKey:   kubeconfigSecretKey,
-		ClusterOptions: []cluster.Option{
-			func(o *cluster.Options) { o.Scheme = edgeScheme },
-		},
-	}
-	provider := kubeconfigprovider.New(providerOpts)
+	// Use custom secret provider that reads kubeconfig from any namespace on-demand.
+	provider := secretprovider.New(homeMgr.GetClient(), edgeScheme, namespace)
 
 	// Create multicluster manager with scheme that includes platform CRDs
 	managerOpts := mcmanager.Options{
@@ -148,17 +152,6 @@ func RunCryptoEdgeOperator() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", func(_ *http.Request) error { return nil }); err != nil {
 		entryLog.Error(err, "Unable to set up ready check")
-		os.Exit(1)
-	}
-
-	// Controller on home cluster using standard controller-runtime manager
-	homeMgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 homeScheme,
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "",
-	})
-	if err != nil {
-		entryLog.Error(err, "Unable to create home manager")
 		os.Exit(1)
 	}
 
@@ -219,20 +212,17 @@ func reconcileCED(
 		return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	// Validate Account exists
-	account := &platformv1alpha1.Account{}
-	accountKey := client.ObjectKey{Name: deployment.Spec.AccountRef.Name, Namespace: deployment.Namespace}
-	if err := homeMgr.GetClient().Get(ctx, accountKey, account); err != nil {
-		log.Error(err, "account not found", "account", deployment.Spec.AccountRef.Name)
+	// Validate inline account info is present
+	if deployment.Spec.Account.Name == "" {
 		deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseError
-		deployment.Status.LastMessage = "Account " + deployment.Spec.AccountRef.Name + " not found"
-		setReadyCondition(deployment, metav1.ConditionFalse, "AccountNotFound", deployment.Status.LastMessage)
+		deployment.Status.LastMessage = "Spec.account.name must be set"
+		setReadyCondition(deployment, metav1.ConditionFalse, "AccountMissing", deployment.Status.LastMessage)
 		_ = homeMgr.GetClient().Status().Update(ctx, deployment)
-		recorder.Event(deployment, corev1.EventTypeWarning, "AccountNotFound", deployment.Status.LastMessage)
+		recorder.Event(deployment, corev1.EventTypeWarning, "AccountMissing", deployment.Status.LastMessage)
 		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	log.Info("account validated", "account", deployment.Spec.AccountRef.Name)
-	recorder.Event(deployment, corev1.EventTypeNormal, "AccountValidated", "Account "+deployment.Spec.AccountRef.Name+" validated")
+	log.Info("account info validated", "account", deployment.Spec.Account.Name)
+	recorder.Event(deployment, corev1.EventTypeNormal, "AccountValidated", "Account "+deployment.Spec.Account.Name+" validated")
 
 	// Handle deletion fast-path
 	if !deployment.DeletionTimestamp.IsZero() {
@@ -252,13 +242,13 @@ func reconcileCED(
 
 	targetSecretName, regionName := rcedResolveTarget(ctx, homeMgr, namespace, deployment)
 	log.Info("routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
-	recorder.Event(deployment, corev1.EventTypeNormal, "Routing", "Routing to region "+deployment.Spec.TargetRegion)
+	recorder.Event(deployment, corev1.EventTypeNormal, "Routing", "Routing to region "+regionName)
 
 	edgeCluster, err := mgr.GetCluster(ctx, targetSecretName)
 	if err != nil {
-		log.Error(err, "failed to get edge cluster", "targetRegion", deployment.Spec.TargetRegion)
+		log.Error(err, "failed to get edge cluster", "targetRegion", regionName)
 		deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseError
-		deployment.Status.LastMessage = "Edge cluster " + deployment.Spec.TargetRegion + " not available"
+		deployment.Status.LastMessage = "Edge cluster " + regionName + " not available"
 		setReadyCondition(deployment, metav1.ConditionFalse, "EdgeUnavailable", deployment.Status.LastMessage)
 		_ = homeMgr.GetClient().Status().Update(ctx, deployment)
 		recorder.Event(deployment, corev1.EventTypeWarning, "EdgeUnavailable", deployment.Status.LastMessage)
@@ -285,7 +275,7 @@ func rcedHandleDelete(
 	const finalizerName = "mesh.openkcm.io/cryptoedgedeployment-finalizer"
 	targetSecretName, regionName := rcedResolveTarget(ctx, homeMgr, namespace, deployment)
 	log.Info("deletion: routing to edge cluster", "targetRegion", regionName, "targetSecret", targetSecretName)
-	recorder.Event(deployment, corev1.EventTypeNormal, "DeleteStarted", "Routing delete to region "+deployment.Spec.TargetRegion)
+	recorder.Event(deployment, corev1.EventTypeNormal, "DeleteStarted", "Routing delete to region "+regionName)
 	edgeCluster, err := mgr.GetCluster(ctx, targetSecretName)
 	if err == nil {
 		releaseName := "ced-" + deployment.Name
@@ -306,7 +296,7 @@ func rcedHandleDelete(
 			recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceDeleteRequested", "Requested deletion for namespace "+deployment.Name)
 		}
 	} else {
-		log.Error(err, "deletion: failed to get edge cluster", "targetRegion", deployment.Spec.TargetRegion)
+		log.Error(err, "deletion: failed to get edge cluster", "targetRegion", regionName)
 	}
 	// remove finalizer
 	finalizers := deployment.GetFinalizers()
@@ -326,21 +316,26 @@ func rcedHandleDelete(
 	return reconcile.Result{}, nil
 }
 
-func rcedResolveTarget(ctx context.Context, homeMgr ctrl.Manager, namespace string, deployment *platformv1alpha1.CryptoEdgeDeployment) (secretName, regionName string) {
-	regionName = deployment.Spec.TargetRegion
-	if deployment.Spec.RegionRef != nil && deployment.Spec.RegionRef.Name != "" {
-		regionName = deployment.Spec.RegionRef.Name
-	}
-	region := &platformv1alpha1.Region{}
-	if err := homeMgr.GetClient().Get(ctx, client.ObjectKey{Name: regionName, Namespace: namespace}, region); err == nil {
-		if region.Spec.KubeconfigSecretName != "" {
-			secretName = region.Spec.KubeconfigSecretName
+func rcedResolveTarget(ctx context.Context, homeMgr ctrl.Manager, namespace string, deployment *platformv1alpha1.CryptoEdgeDeployment) (secretKey, regionName string) {
+	regionName = deployment.Spec.Region.Name
+	// Prefer new kubeconfig ref if provided
+	if deployment.Spec.Region.Kubeconfig != nil {
+		name := deployment.Spec.Region.Kubeconfig.Secret.Name
+		ns := deployment.Spec.Region.Kubeconfig.Secret.Namespace
+		if name != "" && ns != "" {
+			return ns + "/" + name, regionName
+		}
+		if name != "" {
+			// Namespace not specified; default to operator discovery namespace
+			return namespace + "/" + name, regionName
 		}
 	}
-	if secretName == "" {
-		secretName = regionName + "-kubeconfig"
+	// Backward compatibility: use deprecated field
+	if deployment.Spec.Region.KubeconfigSecretName != "" {
+		return namespace + "/" + deployment.Spec.Region.KubeconfigSecretName, regionName
 	}
-	return secretName, regionName
+	// Default: derive secret name from region in discovery namespace
+	return namespace + "/" + (regionName + "-kubeconfig"), regionName
 }
 
 func rcedEnsureNamespace(
@@ -352,15 +347,16 @@ func rcedEnsureNamespace(
 	recorder record.EventRecorder,
 ) (reconcile.Result, error) {
 	ns := &corev1.Namespace{}
-	if err := edgeCluster.GetClient().Get(ctx, client.ObjectKey{Name: nsName}, ns); err != nil {
+	// Use uncached reader for GET to avoid "cache not started" errors on freshly created clusters.
+	if err := edgeCluster.GetAPIReader().Get(ctx, client.ObjectKey{Name: nsName}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
 			ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
 			if err := edgeCluster.GetClient().Create(ctx, ns); err != nil {
 				log.Error(err, "failed to create namespace on edge", "namespace", nsName)
 				return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
 			}
-			log.Info("created namespace on edge cluster", "namespace", nsName, "region", deployment.Spec.TargetRegion)
-			recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceCreated", "Namespace "+nsName+" created on "+deployment.Spec.TargetRegion)
+			log.Info("created namespace on edge cluster", "namespace", nsName, "region", deployment.Spec.Region.Name)
+			recorder.Event(deployment, corev1.EventTypeNormal, "EdgeNamespaceCreated", "Namespace "+nsName+" created on "+deployment.Spec.Region.Name)
 		} else {
 			log.Error(err, "failed to check namespace")
 			return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
@@ -394,14 +390,14 @@ func rcedDeployAndStatus(
 	recorder.Event(deployment, corev1.EventTypeNormal, "HelmDeployed", "Release "+releaseName+" deployed to "+nsName)
 
 	deployment.Status.Phase = platformv1alpha1.CryptoEdgeDeploymentPhaseReady
-	deployment.Status.LastMessage = "Successfully deployed to region " + deployment.Spec.TargetRegion
+	deployment.Status.LastMessage = "Successfully deployed to region " + deployment.Spec.Region.Name
 	deployment.Status.LastAppliedChart = chartRepo + "/" + chartName + ":" + chartVersion
-	setReadyCondition(deployment, metav1.ConditionTrue, "Deployed", "Successfully deployed to region "+deployment.Spec.TargetRegion)
+	setReadyCondition(deployment, metav1.ConditionTrue, "Deployed", "Successfully deployed to region "+deployment.Spec.Region.Name)
 	if err := homeMgr.GetClient().Status().Update(ctx, deployment); err != nil {
 		log.Error(err, "failed to update status")
 	}
-	log.Info("deployment reconciled successfully", "region", deployment.Spec.TargetRegion)
-	recorder.Event(deployment, corev1.EventTypeNormal, "Ready", "Deployment ready in region "+deployment.Spec.TargetRegion)
+	log.Info("deployment reconciled successfully", "region", deployment.Spec.Region.Name)
+	recorder.Event(deployment, corev1.EventTypeNormal, "Ready", "Deployment ready in region "+deployment.Spec.Region.Name)
 	return reconcile.Result{}, nil
 }
 
