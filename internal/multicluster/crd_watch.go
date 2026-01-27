@@ -1,19 +1,19 @@
 package multicluster
 
 import (
+    // Standard library
     "context"
+    _ "embed" // required for go:embed directive
     "errors"
     "fmt"
     "strings"
     "time"
 
+    // Third-party
+    apierrors "k8s.io/apimachinery/pkg/api/errors"
     "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
     "k8s.io/apimachinery/pkg/runtime/serializer/yaml"
     "sigs.k8s.io/controller-runtime/pkg/client"
-
-    _ "embed" // required for go:embed directive
-
-    apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // Embed the CryptoEdgeDeployment CRD manifest for optional apply to the watch cluster.
