@@ -2,8 +2,8 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "crypto-edge-operator.serviceAccountName" . }}-cluster-role
-  namespace: {{ include "crypto-edge-operator.namespace" . }}
+  name: {{ include "krypton-operator.serviceAccountName" . }}-cluster-role
+  namespace: {{ include "krypton-operator.namespace" . }}
 rules:
   - apiGroups:
       - ""
@@ -55,7 +55,7 @@ rules:
   - apiGroups:
       - "mesh.openkcm.io"
     resources:
-      - cryptoedgedeployments
+      - kryptondeployments
     verbs:
       - get
       - list
@@ -66,7 +66,7 @@ rules:
   - apiGroups:
       - "mesh.openkcm.io"
     resources:
-      - cryptoedgedeployments/status
+      - kryptondeployments/status
     verbs:
       - get
       - update
@@ -76,14 +76,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "crypto-edge-operator.serviceAccountName" . }}-cluster-role-binding
-  namespace: {{ include "crypto-edge-operator.namespace" . }}
+  name: {{ include "krypton-operator.serviceAccountName" . }}-cluster-role-binding
+  namespace: {{ include "krypton-operator.namespace" . }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "crypto-edge-operator.serviceAccountName" . }}-cluster-role
+  name: {{ include "krypton-operator.serviceAccountName" . }}-cluster-role
 subjects:
   - kind: ServiceAccount
-    name: {{ include "crypto-edge-operator.serviceAccountName" . }}
-    namespace: {{ include "crypto-edge-operator.namespace" . }}
+    name: {{ include "krypton-operator.serviceAccountName" . }}
+    namespace: {{ include "krypton-operator.namespace" . }}
 

@@ -1,11 +1,11 @@
-# crypto-edge-operator Helm Chart
+# krypton-operator Helm Chart
 
-Helm chart to deploy the Crypto Edge Operator responsible for reconciling `CryptoEdgeDeployment` custom resources (CRD: `cryptoedgedeployments.mesh.openkcm.io`).
+Helm chart to deploy the Crypto Edge Operator responsible for reconciling `KryptonDeployment` custom resources (CRD: `kryptondeployments.mesh.openkcm.io`).
 
 ## Features
 - Deploys controller manager Deployment
 - Installs ServiceAccount, ClusterRole, ClusterRoleBinding
-- Installs CRD for `CryptoEdgeDeployment` resources
+- Installs CRD for `KryptonDeployment` resources
 - Configurable image registry/repository/tag or digest
 - Health and readiness probes
 - Optional pod disruption budget & autoscaling stubs
@@ -19,7 +19,7 @@ Helm chart to deploy the Crypto Edge Operator responsible for reconciling `Crypt
 Add (or directly install from) the local path:
 
 ```bash
-helm install crypto-edge-operator ./charts/crypto-edge-operator \
+helm install krypton-operator ./charts/crypto-edge-operator \
   --namespace crypto-edge-system --create-namespace
 ```
 
@@ -27,7 +27,7 @@ helm install crypto-edge-operator ./charts/crypto-edge-operator \
 | Key | Description | Default |
 |-----|-------------|---------|
 | `image.registry` | Registry hosting the operator image | `docker.io/openkcm` |
-| `image.repository` | Image repository name | `crypto-edge-operator` |
+| `image.repository` | Image repository name | `krypton-operator` |
 | `image.tag` | Image tag (falls back to chart appVersion) | `v0.1.0` |
 | `image.digest` | Optional sha256 digest (overrides tag) | `` |
 | `replicaCount` | Desired replicas (unless autoscaling enabled) | `1` |
@@ -45,17 +45,17 @@ helm install crypto-edge-operator ./charts/crypto-edge-operator \
 ## Operator Flags via Values
 ### CRDs/RBAC-only Mode
 
-Set `installMode.crdsRbacOnly=true` to install only the `CryptoEdgeDeployment` CRD and RBAC bindings on the target cluster. In this mode:
+Set `installMode.crdsRbacOnly=true` to install only the `KryptonDeployment` CRD and RBAC bindings on the target cluster. In this mode:
 - No ServiceAccount is created unless `serviceAccount.create=true`. Set `serviceAccount.create=false` to use an existing ServiceAccount.
 - The `ClusterRoleBinding` will reference the name from `serviceAccount.name`. Ensure that ServiceAccount exists in the release namespace.
 - The Deployment, Service, HPA, and PDB resources are skipped.
 
 Example:
 ```bash
-helm install cryptoedgedeployments-crds-rbac ./charts/crypto-edge-operator \
+helm install kryptondeployments-crds-rbac ./charts/crypto-edge-operator \
   --set installMode.crdsRbacOnly=true \
   --set serviceAccount.create=false \
-  --set serviceAccount.name=crypto-edge-operator \
+  --set serviceAccount.name=krypton-operator \
   --namespace platform-system --create-namespace
 ```
 
@@ -78,7 +78,7 @@ See `values.yaml` for full list.
 Increment `Chart.yaml` version when template changes. Update `appVersion` when operator code changes.
 
 ## CRD
-The chart renders and installs the `CryptoEdgeDeployment` CRD via normal templates so upgrades can modify the CRD as needed.
+The chart renders and installs the `KryptonDeployment` CRD via normal templates so upgrades can modify the CRD as needed.
 
 - Toggle via value: set `crds.install=false` to disable CRD management by this chart (for GitOps or preinstalled CRDs).
 - Uninstall behavior: the CRD is annotated with `helm.sh/resource-policy: keep` and will remain after chart uninstall.
@@ -86,17 +86,17 @@ The chart renders and installs the `CryptoEdgeDeployment` CRD via normal templat
 
 ## Uninstall
 ```bash
-helm uninstall crypto-edge-operator -n crypto-edge-system
+helm uninstall krypton-operator -n crypto-edge-system
 ```
 The CRD will remain (Helm leaves CRDs by default); delete manually if desired:
 ```bash
-kubectl delete crd cryptoedgedeployments.mesh.openkcm.io
+kubectl delete crd kryptondeployments.mesh.openkcm.io
 ```
 
 ## Development
 Render templates:
 ```bash
-helm template crypto-edge-operator ./charts/crypto-edge-operator
+helm template krypton-operator ./charts/crypto-edge-operator
 ```
 
 Lint chart:
