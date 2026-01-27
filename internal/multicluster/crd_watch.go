@@ -1,15 +1,13 @@
 package multicluster
 
 import (
-    // Standard library
     "context"
-    _ "embed" // required for go:embed directive
+    _ "embed"
     "errors"
     "fmt"
     "strings"
     "time"
 
-    // Third-party
     apierrors "k8s.io/apimachinery/pkg/api/errors"
     "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
     "k8s.io/apimachinery/pkg/runtime/serializer/yaml"
