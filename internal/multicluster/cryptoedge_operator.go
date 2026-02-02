@@ -838,7 +838,7 @@ func rcedCheckAndHeal(
 func parseManifestToObjects(manifest string) ([]*metav1unstructured.Unstructured, error) {
 	dec := yaml.NewDecodingSerializer(metav1unstructured.UnstructuredJSONScheme)
 	parts := splitYAMLDocuments(manifest)
-	var objs []*metav1unstructured.Unstructured
+	objs := make([]*metav1unstructured.Unstructured, 0, len(parts))
 	for _, p := range parts {
 		if strings.TrimSpace(p) == "" {
 			continue
