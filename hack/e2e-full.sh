@@ -173,7 +173,8 @@ helm --kubeconfig /tmp/home-kind.kubeconfig upgrade -i "$OP_RELEASE_NAME" "$OP_C
   --set image.registry= \
   --set image.tag=dev \
   --set image.pullPolicy=IfNotPresent \
-  --set image.command[0]=/crypto-edge-operator \
+  --set image.command[0]=/krypton-operator \
+  --set operator.checkInterval=10s \
   --set installMode.crdsRbacOnly=false \
   --set autoscaling.enabled=false \
   --set discovery.namespace=$OP_NS \
@@ -358,6 +359,99 @@ for name in ${TENANT_NAMES_EDGE02[@]}; do
   [ "${POD_COUNT:-0}" -ge 1 ] || { log "edge02 no pods found in namespace $name"; exit 1; }
 done
 log "edge02 workloads present in target namespaces"
+
+log "simulate drift on edge01: delete a Deployment and verify auto-repair"
+# Pick the first tenant on edge01
+DRIFT_NAME_EDGE01=${TENANT_NAMES_EDGE01[1]:-}
+if [ -z "$DRIFT_NAME_EDGE01" ]; then
+  log "no tenant name available for edge01 drift test"; exit 1
+fi
+# Determine an existing Deployment name in the namespace
+DEP_TO_DELETE=$(kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" get deploy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -z "$DEP_TO_DELETE" ]; then
+  log "no deployment found in edge01 namespace $DRIFT_NAME_EDGE01"; kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" get deploy -o wide || true; exit 1
+fi
+log "deleting deployment $DEP_TO_DELETE in edge01/$DRIFT_NAME_EDGE01 to simulate drift"
+kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" delete deploy "$DEP_TO_DELETE" --wait=false
+
+# Force reconcile by annotating the KryptonDeployment on mesh
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" annotate kryptondeployment "$DRIFT_NAME_EDGE01" "tests/reconcile=$(date +%s)" --overwrite
+
+# Wait for CR to move to Pending due to repair, then Ready again
+for i in {1..60}; do
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  [ "$PHASE" = "Pending" ] && break
+  sleep 2
+done
+for i in {1..120}; do
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  [ "$PHASE" = "Ready" ] && break
+  sleep 3
+  if [ $i -eq 120 ]; then
+    log "edge01 drift repair did not reach Ready for $DRIFT_NAME_EDGE01";
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$TENANT_NS" -o yaml || true
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE01" || true
+    exit 1
+  fi
+done
+log "edge01 drift repair completed for $DRIFT_NAME_EDGE01"
+
+# Verify an event indicating repair was triggered exists
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE01" | grep -E "RepairTriggered|ReleaseMissing" >/dev/null || {
+  log "no RepairTriggered/ReleaseMissing event observed for $DRIFT_NAME_EDGE01"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | tail -n 50 || true; exit 1; }
+
+# Verify a Deployment exists again and has available replicas
+for i in {1..120}; do
+  DEP_AFTER=$(kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" get deploy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [ -n "$DEP_AFTER" ]; then
+    AVAIL=$(kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" get deploy "$DEP_AFTER" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+    [ "${AVAIL:-0}" -ge 1 ] && break
+  fi
+  sleep 3
+  [ $i -eq 120 ] && { log "edge01 repaired deployment not available in $DRIFT_NAME_EDGE01"; kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" get deploy -o wide || true; exit 1; }
+done
+log "edge01 repaired deployment available in namespace $DRIFT_NAME_EDGE01"
+
+log "simulate drift on edge02: delete a Deployment and verify auto-repair"
+DRIFT_NAME_EDGE02=${TENANT_NAMES_EDGE02[1]:-}
+if [ -z "$DRIFT_NAME_EDGE02" ]; then
+  log "no tenant name available for edge02 drift test"; exit 1
+fi
+DEP_TO_DELETE=$(kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" get deploy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -z "$DEP_TO_DELETE" ]; then
+  log "no deployment found in edge02 namespace $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" get deploy -o wide || true; exit 1
+fi
+log "deleting deployment $DEP_TO_DELETE in edge02/$DRIFT_NAME_EDGE02 to simulate drift"
+kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" delete deploy "$DEP_TO_DELETE" --wait=false
+
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" annotate kryptondeployment "$DRIFT_NAME_EDGE02" "tests/reconcile=$(date +%s)" --overwrite
+
+for i in {1..60}; do
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  [ "$PHASE" = "Pending" ] && break
+  sleep 2
+done
+for i in {1..120}; do
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  [ "$PHASE" = "Ready" ] && break
+  sleep 3
+  [ $i -eq 120 ] && { log "edge02 drift repair did not reach Ready for $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$TENANT_NS" -o yaml || true; exit 1; }
+done
+log "edge02 drift repair completed for $DRIFT_NAME_EDGE02"
+
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE02" | grep -E "RepairTriggered|ReleaseMissing" >/dev/null || {
+  log "no RepairTriggered/ReleaseMissing event observed for $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | tail -n 50 || true; exit 1; }
+
+for i in {1..120}; do
+  DEP_AFTER=$(kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" get deploy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [ -n "$DEP_AFTER" ]; then
+    AVAIL=$(kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" get deploy "$DEP_AFTER" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+    [ "${AVAIL:-0}" -ge 1 ] && break
+  fi
+  sleep 3
+  [ $i -eq 120 ] && { log "edge02 repaired deployment not available in $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" get deploy -o wide || true; exit 1; }
+done
+log "edge02 repaired deployment available in namespace $DRIFT_NAME_EDGE02"
 
 log "delete all KryptonDeployments on mesh cluster"
 for name in ${TENANT_NAMES_EDGE01[@]}; do
