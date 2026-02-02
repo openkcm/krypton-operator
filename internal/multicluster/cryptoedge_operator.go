@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -16,6 +19,7 @@ import (
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
@@ -25,10 +29,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	helmrelease "helm.sh/helm/v3/pkg/release"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metautil "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -529,6 +536,29 @@ func rcedDeployAndStatus(
 	setReadyCondition func(*platformv1alpha1.KryptonDeployment, metav1.ConditionStatus, string, string),
 ) (reconcile.Result, error) {
 	releaseName := "ced-" + deployment.Name
+
+	// First, check for missing resources/release and repair if needed to capture events.
+	repaired, missingList, err := rcedCheckAndHeal(ctx, log, edgeCluster, nsName, releaseName, chartRepo, chartName, chartVersion, recorder, deployment)
+	if err != nil {
+		log.Error(err, "health check failed")
+		deployment.Status.Phase = platformv1alpha1.KryptonDeploymentPhaseError
+		deployment.Status.LastMessage = "Health check failed: " + err.Error()
+		setReadyCondition(deployment, metav1.ConditionFalse, "HealthCheckFailed", deployment.Status.LastMessage)
+		_ = homeMgr.GetClient().Status().Update(ctx, deployment)
+		return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	if repaired {
+		msg := "Detected missing resources, triggered repair: " + strings.Join(missingList, ", ")
+		log.Info(msg)
+		recorder.Event(deployment, corev1.EventTypeWarning, "RepairTriggered", msg)
+		deployment.Status.Phase = platformv1alpha1.KryptonDeploymentPhasePending
+		deployment.Status.LastMessage = msg
+		setReadyCondition(deployment, metav1.ConditionFalse, "RepairTriggered", msg)
+		_ = homeMgr.GetClient().Status().Update(ctx, deployment)
+		return reconcile.Result{RequeueAfter: 20 * time.Second}, nil
+	}
+
+	// No repair needed; still run deploy/upgrade to converge drift/config changes idempotently.
 	if err := deployHelmChart(ctx, log, edgeCluster, nsName, releaseName, chartRepo, chartName, chartVersion); err != nil {
 		log.Error(err, "helm deployment failed")
 		deployment.Status.Phase = platformv1alpha1.KryptonDeploymentPhaseError
@@ -541,6 +571,19 @@ func rcedDeployAndStatus(
 	log.Info("helm deploy succeeded", "release", releaseName, "namespace", nsName)
 	recorder.Event(deployment, corev1.EventTypeNormal, "HelmDeployed", "Release "+releaseName+" deployed to "+nsName)
 
+	// Verify runtime health (Deployments available) and surface degraded state if not ready yet.
+	healthy, notReady := rcedNamespaceWorkloadHealthy(ctx, edgeCluster, nsName)
+	if !healthy {
+		msg := "Workloads not yet ready: " + strings.Join(notReady, ", ")
+		log.Info(msg)
+		recorder.Event(deployment, corev1.EventTypeNormal, "NotReady", msg)
+		deployment.Status.Phase = platformv1alpha1.KryptonDeploymentPhasePending
+		deployment.Status.LastMessage = msg
+		setReadyCondition(deployment, metav1.ConditionFalse, "NotReady", msg)
+		_ = homeMgr.GetClient().Status().Update(ctx, deployment)
+		return reconcile.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+
 	deployment.Status.Phase = platformv1alpha1.KryptonDeploymentPhaseReady
 	deployment.Status.LastMessage = "Successfully deployed to region " + deployment.Spec.Region.Name
 	deployment.Status.LastAppliedChart = chartRepo + "/" + chartName + ":" + chartVersion
@@ -550,7 +593,8 @@ func rcedDeployAndStatus(
 	}
 	log.Info("deployment reconciled successfully", "region", deployment.Spec.Region.Name)
 	recorder.Event(deployment, corev1.EventTypeNormal, "Ready", "Deployment ready in region "+deployment.Spec.Region.Name)
-	return reconcile.Result{}, nil
+	// Periodic recheck interval
+	return reconcile.Result{RequeueAfter: getCheckInterval()}, nil
 }
 
 func deployHelmChart(ctx context.Context, log logr.Logger, edgeCluster cluster.Cluster, namespace, releaseName, chartRepo, chartName, chartVersion string) error {
@@ -670,4 +714,180 @@ func uninstallHelmChart(ctx context.Context, log logr.Logger, edgeCluster cluste
 	}
 	log.Info("helm uninstall completed", "release", releaseName)
 	return nil
+}
+
+// getCheckInterval returns the configured health-check reconcile interval.
+// It reads KRYPTON_CHECK_INTERVAL env var, accepting Go duration strings (e.g., "60s", "5m")
+// or integer seconds. Defaults to 60s.
+var (
+	checkIntervalOnce sync.Once
+	checkIntervalDur  time.Duration
+)
+
+func getCheckInterval() time.Duration {
+	checkIntervalOnce.Do(func() {
+		v := strings.TrimSpace(os.Getenv("KRYPTON_CHECK_INTERVAL"))
+		if v == "" {
+			checkIntervalDur = 60 * time.Second
+			return
+		}
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			checkIntervalDur = d
+			return
+		}
+		if s, err := strconv.Atoi(v); err == nil && s > 0 {
+			checkIntervalDur = time.Duration(s) * time.Second
+			return
+		}
+		checkIntervalDur = 60 * time.Second
+	})
+	return checkIntervalDur
+}
+
+// rcedCheckAndHeal verifies that all resources rendered by the Helm release manifest exist on the target cluster.
+// If any are missing, it triggers a corrective upgrade/install and returns repaired=true with the missing list.
+func rcedCheckAndHeal(
+	ctx context.Context,
+	log logr.Logger,
+	edgeCluster cluster.Cluster,
+	namespace, releaseName string,
+	chartRepo, chartName, chartVersion string,
+	recorder record.EventRecorder,
+	deployment *platformv1alpha1.KryptonDeployment,
+) (repaired bool, missing []string, err error) {
+	restCfg := edgeCluster.GetConfig()
+	getter := helmutil.NewRemoteRESTClientGetterForNamespace(restCfg, namespace)
+	actionConfig := new(action.Configuration)
+	if err := actionConfig.Init(getter, namespace, os.Getenv("HELM_DRIVER"), func(format string, v ...any) {
+		log.V(1).Info(fmt.Sprintf(format, v...))
+	}); err != nil {
+		return false, nil, fmt.Errorf("helm init failed: %w", err)
+	}
+
+	// Determine if release exists
+	hist := action.NewHistory(actionConfig)
+	hist.Max = 1
+	_, histErr := hist.Run(releaseName)
+	if histErr != nil {
+		// Release missing: trigger redeploy
+		recorder.Event(deployment, corev1.EventTypeWarning, "ReleaseMissing", "Helm release missing; re-installing")
+		if err := deployHelmChart(ctx, log, edgeCluster, namespace, releaseName, chartRepo, chartName, chartVersion); err != nil {
+			return false, nil, fmt.Errorf("repair install failed: %w", err)
+		}
+		return true, []string{"release:" + releaseName}, nil
+	}
+
+	// Fetch current release to get manifest
+	get := action.NewGet(actionConfig)
+	rel, getErr := get.Run(releaseName)
+	if getErr != nil {
+		return false, nil, fmt.Errorf("helm get failed: %w", getErr)
+	}
+	if rel == nil || rel.Info == nil || rel.Info.Status == helmrelease.StatusUninstalled {
+		recorder.Event(deployment, corev1.EventTypeWarning, "ReleaseNotInstalled", "Release not installed; re-installing")
+		if err := deployHelmChart(ctx, log, edgeCluster, namespace, releaseName, chartRepo, chartName, chartVersion); err != nil {
+			return false, nil, fmt.Errorf("repair install failed: %w", err)
+		}
+		return true, []string{"release:" + releaseName}, nil
+	}
+
+	// Parse manifest into objects and verify existence (namespace-scoped preferred).
+	objs, parseErr := parseManifestToObjects(rel.Manifest)
+	if parseErr != nil {
+		// If parsing fails, fall back to no-op (don't hard fail the reconcile)
+		log.Error(parseErr, "manifest parse failed; skipping granular checks")
+		return false, nil, nil
+	}
+
+	apiReader := edgeCluster.GetAPIReader()
+	for _, obj := range objs {
+		// Only check objects in our namespace or those without namespace (cluster-scoped), best-effort.
+		if obj.GetNamespace() != "" && obj.GetNamespace() != namespace {
+			continue
+		}
+		gvk := obj.GroupVersionKind()
+		// Limit checks to commonly permitted types to avoid RBAC issues
+		allowed := (gvk.Group == "" && gvk.Version == "v1" && (gvk.Kind == "ConfigMap" || gvk.Kind == "Secret" || gvk.Kind == "Service" || gvk.Kind == "ServiceAccount")) ||
+			(gvk.Group == "apps" && gvk.Version == "v1" && (gvk.Kind == "Deployment" || gvk.Kind == "ReplicaSet"))
+		if !allowed {
+			continue
+		}
+		key := client.ObjectKey{Name: obj.GetName(), Namespace: obj.GetNamespace()}
+		u := &metav1unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		if err := apiReader.Get(ctx, key, u); err != nil {
+			if apierrors.IsNotFound(err) {
+				missing = append(missing, fmt.Sprintf("%s/%s", obj.GetKind(), key.String()))
+			} else {
+				log.Error(err, "failed to check object", "gkv", gvk.String(), "name", key.String())
+			}
+		}
+	}
+
+	if len(missing) > 0 {
+		// Attempt to heal by re-applying via upgrade (idempotent)
+		if err := deployHelmChart(ctx, log, edgeCluster, namespace, releaseName, chartRepo, chartName, chartVersion); err != nil {
+			return false, missing, fmt.Errorf("repair upgrade failed: %w", err)
+		}
+		return true, missing, nil
+	}
+	return false, nil, nil
+}
+
+// parseManifestToObjects splits a Helm manifest multi-doc string into Unstructured objects.
+func parseManifestToObjects(manifest string) ([]*metav1unstructured.Unstructured, error) {
+	dec := yaml.NewDecodingSerializer(metav1unstructured.UnstructuredJSONScheme)
+	parts := splitYAMLDocuments(manifest)
+	var objs []*metav1unstructured.Unstructured
+	for _, p := range parts {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		u := &metav1unstructured.Unstructured{}
+		_, gvk, err := dec.Decode([]byte(p), nil, u)
+		if err != nil || gvk == nil {
+			// skip non-k8s docs (e.g., notes) or parse errors
+			continue
+		}
+		objs = append(objs, u)
+	}
+	return objs, nil
+}
+
+func splitYAMLDocuments(s string) []string {
+	// Helm manifests are concatenated with --- separators; also include cases with comments after ---
+	// A simple split on "\n---" is sufficient for our purposes.
+	// Keep it tolerant to different newline patterns.
+	var docs []string
+	cur := s
+	for {
+		idx := strings.Index(cur, "\n---")
+		if idx == -1 {
+			docs = append(docs, cur)
+			break
+		}
+		docs = append(docs, cur[:idx])
+		cur = cur[idx+4:]
+	}
+	return docs
+}
+
+// rcedNamespaceWorkloadHealthy checks Deployments in namespace for availability.
+func rcedNamespaceWorkloadHealthy(ctx context.Context, edgeCluster cluster.Cluster, namespace string) (bool, []string) {
+	var dlist appsv1.DeploymentList
+	if err := edgeCluster.GetAPIReader().List(ctx, &dlist, &client.ListOptions{Namespace: namespace}); err != nil {
+		// Conservative: if we cannot list, treat as not healthy once.
+		return false, []string{"list-error:" + err.Error()}
+	}
+	var notReady []string
+	for _, d := range dlist.Items {
+		desired := int32(1)
+		if d.Spec.Replicas != nil {
+			desired = *d.Spec.Replicas
+		}
+		if d.Status.AvailableReplicas < desired {
+			notReady = append(notReady, fmt.Sprintf("Deployment/%s (%d/%d available)", d.Name, d.Status.AvailableReplicas, desired))
+		}
+	}
+	return len(notReady) == 0, notReady
 }

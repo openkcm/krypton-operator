@@ -210,3 +210,9 @@ populateArgs: true
 # CRD installation control: when true, render and manage the CRD via templates.
 crds:
   install: true
+
+# Operator settings
+operator:
+  # Periodic reconcile interval used for health checks.
+  # Accepts Go duration strings (e.g., "60s", "5m") or integer seconds.
+  checkInterval: 60s

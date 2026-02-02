@@ -87,6 +87,8 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: status.podIP
+            - name: KRYPTON_CHECK_INTERVAL
+              value: "{{ .Values.operator.checkInterval | default "60s" }}"
             - name: K8S_NODE_NAME
               valueFrom:
                 fieldRef:
