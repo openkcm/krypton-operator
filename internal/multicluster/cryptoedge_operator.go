@@ -120,7 +120,7 @@ func RunCryptoEdgeOperator() {
 	entryLog := ctrllog.Log.WithName("krypton-operator")
 	ctx := ctrl.SetupSignalHandler()
 
-	entryLog.Info("Starting CryptoEdge operator", "namespace", namespace, "chart", fmt.Sprintf("%s/%s:%s", chartRepo, chartName, chartVersion))
+	entryLog.Info("Starting Krypton operator", "namespace", namespace, "chart", fmt.Sprintf("%s/%s:%s", chartRepo, chartName, chartVersion))
 	entryLog.Info("Kubeconfig provider config", "namespace", namespace, "secretLabel", kubeconfigSecretLabel, "secretKey", kubeconfigSecretKey)
 
 	watchCfg, watchHost, watchCtxUsed, err := buildWatchConfig(ctx, watchKubeconfig, watchContext, watchKubeconfigSecretNamespace, watchKubeconfigSecretName, watchKubeconfigSecretKey)
