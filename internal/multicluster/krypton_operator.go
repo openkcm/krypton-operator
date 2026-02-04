@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -50,6 +51,7 @@ import (
 // RunKryptonOperator starts the operator for KryptonDeployment resources.
 func RunKryptonOperator() {
 	var namespace string
+	var watchNamespaces string
 	var kubeconfigSecretLabel string
 	var kubeconfigSecretKey string
 	var watchKubeconfig string
@@ -64,6 +66,7 @@ func RunKryptonOperator() {
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.StringVar(&namespace, "namespace", namespace, "Namespace containing kubeconfig secrets")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", watchNamespaces, "Comma-separated namespaces to watch (empty or * for all)")
 	flag.StringVar(&watchContext, "watch-context", watchContext, "Kubeconfig context name for the watch cluster")
 	flag.BoolVar(&ensureWatchCRDs, "ensure-watch-crds", ensureWatchCRDs, "Ensure required CRDs exist on the watch cluster at startup")
 	flag.StringVar(&watchKubeconfigSecretName, "watch-kubeconfig-secret", watchKubeconfigSecretName, "Name of Secret containing kubeconfig for the watch cluster")
@@ -83,6 +86,9 @@ func RunKryptonOperator() {
 		if s := string(b); s != "" {
 			namespace = s
 		}
+	}
+	if v := os.Getenv("WATCH_NAMESPACES"); v != "" {
+		watchNamespaces = v
 	}
 	if lbl := os.Getenv("KUBECONFIG_SECRET_LABEL"); lbl != "" {
 		kubeconfigSecretLabel = lbl
@@ -123,6 +129,24 @@ func RunKryptonOperator() {
 	entryLog.Info("Starting Krypton operator", "namespace", namespace, "chart", fmt.Sprintf("%s/%s:%s", chartRepo, chartName, chartVersion))
 	entryLog.Info("Kubeconfig provider config", "namespace", namespace, "secretLabel", kubeconfigSecretLabel, "secretKey", kubeconfigSecretKey)
 
+	// Determine watch scope for the manager cache
+	var watchNSList []string
+	watchMode := "all"
+	if ws := strings.TrimSpace(watchNamespaces); ws != "" && ws != "*" {
+		for p := range strings.SplitSeq(ws, ",") {
+			n := strings.TrimSpace(p)
+			if n != "" {
+				watchNSList = append(watchNSList, n)
+			}
+		}
+		if len(watchNSList) > 0 {
+			watchMode = "restricted"
+		} else {
+			watchMode = "all"
+		}
+	}
+	entryLog.Info("Watch scope configured", "mode", watchMode, "namespaces", watchNSList)
+
 	watchCfg, watchHost, watchCtxUsed, err := buildWatchConfig(ctx, watchKubeconfig, watchContext, watchKubeconfigSecretNamespace, watchKubeconfigSecretName, watchKubeconfigSecretKey)
 	if err != nil {
 		entryLog.Error(err, "Failed to build watch cluster config")
@@ -132,7 +156,7 @@ func RunKryptonOperator() {
 
 	homeScheme, edgeScheme, providerScheme := buildSchemes()
 
-	homeMgr, err := createHomeManager(watchCfg, homeScheme)
+	homeMgr, err := createHomeManager(watchCfg, homeScheme, watchNSList)
 	if err != nil {
 		entryLog.Error(err, "Unable to create home manager")
 		os.Exit(1)
@@ -197,12 +221,24 @@ func buildSchemes() (*runtime.Scheme, *runtime.Scheme, *runtime.Scheme) {
 	return homeScheme, edgeScheme, providerScheme
 }
 
-func createHomeManager(cfg *rest.Config, scheme *runtime.Scheme) (ctrl.Manager, error) {
-	return ctrl.NewManager(cfg, ctrl.Options{
+func createHomeManager(cfg *rest.Config, scheme *runtime.Scheme, watchNSList []string) (ctrl.Manager, error) {
+	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "",
-	})
+	}
+	// If a restricted namespace list is provided, scope cache to those namespaces.
+	if len(watchNSList) > 0 {
+		nsMap := make(map[string]cache.Config, len(watchNSList))
+		for _, ns := range watchNSList {
+			nsMap[ns] = cache.Config{}
+		}
+		opts.Cache = cache.Options{DefaultNamespaces: nsMap}
+	} else {
+		// Default: watch all namespaces.
+		opts.Cache = cache.Options{}
+	}
+	return ctrl.NewManager(cfg, opts)
 }
 
 func createMCManager(cfg *rest.Config, provider *secretprovider.Provider, scheme *runtime.Scheme) (mcmanager.Manager, error) {

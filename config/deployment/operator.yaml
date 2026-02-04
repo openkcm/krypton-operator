@@ -22,11 +22,14 @@ spec:
             - --leader-elect=false
             - --namespace=$(WATCH_NAMESPACE)
             - --kubeconfig-label=sigs.k8s.io/multicluster-runtime-kubeconfig
+            - --watch-namespaces=$(WATCH_NAMESPACES)
           env:
             - name: WATCH_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: WATCH_NAMESPACES
+              value: "*"
           resources:
             limits:
               cpu: 200m

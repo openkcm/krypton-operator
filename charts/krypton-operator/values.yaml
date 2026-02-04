@@ -216,3 +216,5 @@ operator:
   # Periodic reconcile interval used for health checks.
   # Accepts Go duration strings (e.g., "60s", "5m") or integer seconds.
   checkInterval: 60s
+  # Comma-separated namespaces to watch; '*' means all namespaces (default).
+  watchNamespaces: "*"
