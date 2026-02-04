@@ -15,8 +15,8 @@ EDGE_01_CLUSTER=edge01
 EDGE_02_CLUSTER=edge02
 # Operator namespace (where the chart is installed)
 OP_NS=krypton-operator
-# Tenant namespace (where Tenant CRs live)
-TENANT_NS=default
+# Tenant namespaces (where KryptonDeployment CRs live)
+TENANT_NS_LIST=(default test)
 TENANT_NAME_EDGE01=e2e-full-echo-edge01
 TENANT_NAME_EDGE02=e2e-full-echo-edge02
 TENANT_SUFFIXES=(a b c)
@@ -178,6 +178,7 @@ helm --kubeconfig /tmp/home-kind.kubeconfig upgrade -i "$OP_RELEASE_NAME" "$OP_C
   --set installMode.crdsRbacOnly=false \
   --set autoscaling.enabled=false \
   --set discovery.namespace=$OP_NS \
+  --set operator.watchNamespaces='*' \
   --set watchCluster.secretName=kubeconfig-mesh \
   --set watchCluster.secretNamespace=$OP_NS \
   --set watchCluster.secretKey=kubeconfig \
@@ -239,22 +240,28 @@ log "operator ready"
 
 log "skip creating Account/Region CRs; using inline spec fields"
 
-log "apply 3 KryptonDeployments per region to mesh cluster"
-# Create three deployments for edge01 and edge02
+log "ensure additional tenant namespaces exist on mesh cluster"
+for ns in ${TENANT_NS_LIST[@]}; do
+  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get ns "$ns" >/dev/null 2>&1 || \
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig create ns "$ns"
+done
+
+log "apply 3 KryptonDeployments per region across tenant namespaces on mesh cluster"
 TENANT_NAMES_EDGE01=()
 TENANT_NAMES_EDGE02=()
-for s in ${TENANT_SUFFIXES[@]}; do
-  NAME_EDGE01="${TENANT_NAME_EDGE01}-${s}"
-  NAME_EDGE02="${TENANT_NAME_EDGE02}-${s}"
-  TENANT_NAMES_EDGE01+=("$NAME_EDGE01")
-  TENANT_NAMES_EDGE02+=("$NAME_EDGE02")
-  # Edge01
-  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig apply -n "$TENANT_NS" -f - <<EOF
+for ns in ${TENANT_NS_LIST[@]}; do
+  for s in ${TENANT_SUFFIXES[@]}; do
+    NAME_EDGE01="${TENANT_NAME_EDGE01}-${s}-${ns}"
+    NAME_EDGE02="${TENANT_NAME_EDGE02}-${s}-${ns}"
+    TENANT_NAMES_EDGE01+=("$NAME_EDGE01")
+    TENANT_NAMES_EDGE02+=("$NAME_EDGE02")
+    # Edge01
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig apply -n "$ns" -f - <<EOF
 apiVersion: mesh.openkcm.io/v1alpha1
 kind: KryptonDeployment
 metadata:
   name: ${NAME_EDGE01}
-  namespace: ${TENANT_NS}
+  namespace: ${ns}
 spec:
   account:
     name: dev-account
@@ -267,13 +274,13 @@ spec:
         name: kubeconfig-edge01
         namespace: ${OP_NS}
 EOF
-  # Edge02
-  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig apply -n "$TENANT_NS" -f - <<EOF
+    # Edge02
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig apply -n "$ns" -f - <<EOF
 apiVersion: mesh.openkcm.io/v1alpha1
 kind: KryptonDeployment
 metadata:
   name: ${NAME_EDGE02}
-  namespace: ${TENANT_NS}
+  namespace: ${ns}
 spec:
   account:
     name: dev-account
@@ -286,18 +293,20 @@ spec:
         name: kubeconfig-edge02
         namespace: ${OP_NS}
 EOF
+  done
 done
 
-log "wait for all KryptonDeployments Ready on mesh cluster (timeout 10m each)"
+log "wait for all KryptonDeployments Ready on mesh cluster across namespaces (timeout 10m each)"
 # Edge01
 for name in ${TENANT_NAMES_EDGE01[@]}; do
+  ns=${name##*-}
   for i in {1..200}; do
-    PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     [ "$PHASE" = "Ready" ] && break
     sleep 3
     if [ $i -eq 200 ]; then
-      log "edge01 deployment $name not Ready"
-      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$TENANT_NS" -o yaml || true
+      log "edge01 deployment $name ($ns) not Ready"
+      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$ns" -o yaml || true
       log "collecting operator diagnostics from home cluster"
       OP_POD=$(kubectl --kubeconfig /tmp/home-kind.kubeconfig -n "$OP_NS" get pods -l app.kubernetes.io/name=krypton-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
       if [ -n "$OP_POD" ]; then
@@ -307,24 +316,25 @@ for name in ${TENANT_NAMES_EDGE01[@]}; do
       fi
       log "collecting mesh events"
       kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$OP_NS" get events --sort-by=.lastTimestamp || true
-      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp || true
+      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$ns" get events --sort-by=.lastTimestamp || true
       log "collecting edge01 namespace diagnostics"
       kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$name" get all -o wide || true
       exit 1
     fi
   done
-  log "edge01 deployment $name Ready"
+  log "edge01 deployment $name ($ns) Ready"
 done
 
 # Edge02
 for name in ${TENANT_NAMES_EDGE02[@]}; do
+  ns=${name##*-}
   for i in {1..200}; do
-    PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     [ "$PHASE" = "Ready" ] && break
     sleep 3
     if [ $i -eq 200 ]; then
-      log "edge02 deployment $name not Ready"
-      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$TENANT_NS" -o yaml || true
+      log "edge02 deployment $name ($ns) not Ready"
+      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$name" -n "$ns" -o yaml || true
       log "collecting operator diagnostics from home cluster"
       OP_POD=$(kubectl --kubeconfig /tmp/home-kind.kubeconfig -n "$OP_NS" get pods -l app=krypton-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
       if [ -n "$OP_POD" ]; then
@@ -334,13 +344,13 @@ for name in ${TENANT_NAMES_EDGE02[@]}; do
       fi
       log "collecting mesh events"
       kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$OP_NS" get events --sort-by=.lastTimestamp || true
-      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp || true
+      kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$ns" get events --sort-by=.lastTimestamp || true
       log "collecting edge02 namespace diagnostics"
       kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$name" get all -o wide || true
       exit 1
     fi
   done
-  log "edge02 deployment $name Ready"
+  log "edge02 deployment $name ($ns) Ready"
 done
 
 log "verify workloads exist in target namespaces on edge clusters"
@@ -374,31 +384,32 @@ fi
 log "deleting deployment $DEP_TO_DELETE in edge01/$DRIFT_NAME_EDGE01 to simulate drift"
 kubectl --kubeconfig /tmp/edge01-kind.kubeconfig -n "$DRIFT_NAME_EDGE01" delete deploy "$DEP_TO_DELETE" --wait=false
 
-# Force reconcile by annotating the KryptonDeployment on mesh
-kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" annotate kryptondeployment "$DRIFT_NAME_EDGE01" "tests/reconcile=$(date +%s)" --overwrite
+# Force reconcile by annotating the KryptonDeployment on mesh (detect tenant namespace)
+DRIFT_NS_EDGE01=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" --all-namespaces -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || echo "default")
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE01" annotate kryptondeployment "$DRIFT_NAME_EDGE01" "tests/reconcile=$(date +%s)" --overwrite
 
 # Wait for CR to move to Pending due to repair, then Ready again
 for i in {1..60}; do
-  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$DRIFT_NS_EDGE01" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   [ "$PHASE" = "Pending" ] && break
   sleep 2
 done
 for i in {1..120}; do
-  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$DRIFT_NS_EDGE01" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   [ "$PHASE" = "Ready" ] && break
   sleep 3
   if [ $i -eq 120 ]; then
     log "edge01 drift repair did not reach Ready for $DRIFT_NAME_EDGE01";
-    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$TENANT_NS" -o yaml || true
-    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE01" || true
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE01" -n "$DRIFT_NS_EDGE01" -o yaml || true
+    kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE01" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE01" || true
     exit 1
   fi
 done
 log "edge01 drift repair completed for $DRIFT_NAME_EDGE01"
 
 # Verify an event indicating repair was triggered exists
-kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE01" | grep -E "RepairTriggered|ReleaseMissing" >/dev/null || {
-  log "no RepairTriggered/ReleaseMissing event observed for $DRIFT_NAME_EDGE01"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | tail -n 50 || true; exit 1; }
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE01" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE01" | grep -E "RepairTriggered|ReleaseMissing" >/dev/null || {
+  log "no RepairTriggered/ReleaseMissing event observed for $DRIFT_NAME_EDGE01"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE01" get events --sort-by=.lastTimestamp | tail -n 50 || true; exit 1; }
 
 # Verify a Deployment exists again and has available replicas
 for i in {1..120}; do
@@ -424,23 +435,24 @@ fi
 log "deleting deployment $DEP_TO_DELETE in edge02/$DRIFT_NAME_EDGE02 to simulate drift"
 kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" delete deploy "$DEP_TO_DELETE" --wait=false
 
-kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" annotate kryptondeployment "$DRIFT_NAME_EDGE02" "tests/reconcile=$(date +%s)" --overwrite
+DRIFT_NS_EDGE02=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" --all-namespaces -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || echo "default")
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE02" annotate kryptondeployment "$DRIFT_NAME_EDGE02" "tests/reconcile=$(date +%s)" --overwrite
 
 for i in {1..60}; do
-  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$DRIFT_NS_EDGE02" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   [ "$PHASE" = "Pending" ] && break
   sleep 2
 done
 for i in {1..120}; do
-  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$TENANT_NS" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  PHASE=$(kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$DRIFT_NS_EDGE02" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   [ "$PHASE" = "Ready" ] && break
   sleep 3
-  [ $i -eq 120 ] && { log "edge02 drift repair did not reach Ready for $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$TENANT_NS" -o yaml || true; exit 1; }
+  [ $i -eq 120 ] && { log "edge02 drift repair did not reach Ready for $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig get kryptondeployment "$DRIFT_NAME_EDGE02" -n "$DRIFT_NS_EDGE02" -o yaml || true; exit 1; }
 done
 log "edge02 drift repair completed for $DRIFT_NAME_EDGE02"
 
-kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE02" | grep -E "RepairTriggered|ReleaseMissing" >/dev/null || {
-  log "no RepairTriggered/ReleaseMissing event observed for $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$TENANT_NS" get events --sort-by=.lastTimestamp | tail -n 50 || true; exit 1; }
+kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE02" get events --sort-by=.lastTimestamp | grep "$DRIFT_NAME_EDGE02" | grep -E "RepairTriggered|ReleaseMissing" >/dev/null || {
+  log "no RepairTriggered/ReleaseMissing event observed for $DRIFT_NAME_EDGE02"; kubectl --kubeconfig /tmp/mesh-kind.kubeconfig -n "$DRIFT_NS_EDGE02" get events --sort-by=.lastTimestamp | tail -n 50 || true; exit 1; }
 
 for i in {1..120}; do
   DEP_AFTER=$(kubectl --kubeconfig /tmp/edge02-kind.kubeconfig -n "$DRIFT_NAME_EDGE02" get deploy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
@@ -453,12 +465,14 @@ for i in {1..120}; do
 done
 log "edge02 repaired deployment available in namespace $DRIFT_NAME_EDGE02"
 
-log "delete all KryptonDeployments on mesh cluster"
+log "delete all KryptonDeployments on mesh cluster across namespaces"
 for name in ${TENANT_NAMES_EDGE01[@]}; do
-  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig delete kryptondeployment "$name" -n "$TENANT_NS"
+  ns=${name##*-}
+  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig delete kryptondeployment "$name" -n "$ns"
 done
 for name in ${TENANT_NAMES_EDGE02[@]}; do
-  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig delete kryptondeployment "$name" -n "$TENANT_NS"
+  ns=${name##*-}
+  kubectl --kubeconfig /tmp/mesh-kind.kubeconfig delete kryptondeployment "$name" -n "$ns"
 done
 
 log "wait for namespace deletion on edge clusters"
