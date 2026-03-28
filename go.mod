@@ -5,8 +5,8 @@ go 1.25.4
 require (
 	github.com/go-logr/logr v1.4.3
 	helm.sh/helm/v3 v3.19.4
-	k8s.io/api v0.35.0
-	k8s.io/apimachinery v0.35.0
+	k8s.io/api v0.35.1
+	k8s.io/apimachinery v0.35.1
 	k8s.io/client-go v0.35.0
 	sigs.k8s.io/controller-runtime v0.22.4
 	sigs.k8s.io/multicluster-runtime v0.22.4-beta.1
